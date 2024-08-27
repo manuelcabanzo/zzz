@@ -7,11 +7,19 @@ edition = "2021"
 egui = "0.28.1"
 eframe = "0.28.1"
 syntect = { version = "5.2.0", optional = true }
-log = "0.4.20"
-serde = "1.0.195"
+log = "0.4.22"
+serde = "1.0.209"
 chrono = "0.4.38"
 rfd = "0.14.1"
 crossterm = "0.28.1"
+
+[lib]
+name = "zzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zzz"
+path = "src/main.rs"
 
 [features]
 default = ["editor"]
