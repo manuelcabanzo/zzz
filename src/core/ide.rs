@@ -65,7 +65,12 @@ impl IDE {
         self.handle_keyboard_shortcuts(ctx);
         
         if self.show_file_panel {
-            self.file_panel.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
+            self.file_panel.show(
+                ctx,
+                &mut self.code_editor.code,
+                &mut self.code_editor.current_file,
+                &mut |msg| self.console_panel.log(msg)
+            );
         }
         
         if self.show_emulator_panel {

@@ -46,6 +46,9 @@ impl FilePanel {
                         }
                     }
                 });
+                
+                self.show_rename_dialog(ctx, code, current_file, log);
+
                 ui.separator();
                 if let (Some(fs), Some(project_path)) = (&self.file_system, &self.project_path) {
                     let mut expanded_folders = self.expanded_folders.clone();
@@ -55,6 +58,7 @@ impl FilePanel {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         Self::render_folder_contents(
                             ui,
+                            ctx,
                             project_path,
                             fs,
                             &mut expanded_folders,
@@ -87,7 +91,98 @@ impl FilePanel {
         }
     }
 
+    fn show_rename_dialog(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
+        let mut action = None;
+
+        if let Some((path, old_name)) = &mut self.rename_dialog {
+            let mut new_name = old_name.clone();
+            let mut confirmed = false;
+            let mut canceled = false;
+
+            egui::Window::new("Rename")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("New name:");
+                        let response = ui.text_edit_singleline(&mut new_name);
+                        if response.changed() {
+                            *old_name = new_name.clone();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            canceled = true;
+                        }
+                        if ui.button("Confirm").clicked() {
+                            confirmed = true;
+                        }
+                    });
+                });
+
+            if confirmed {
+                let new_path = path.with_file_name(&new_name);
+                action = Some((path.clone(), new_path.clone(), old_name.clone(), new_name));
+                log(&format!("Confirmation clicked. Old path: {}, New path: {}", path.display(), new_path.display()));
+            } else if canceled {
+                log("Rename dialog canceled");
+                self.rename_dialog = None;
+            }
+        }
+
+        if let Some((old_path, new_path, old_name, new_name)) = action {
+            log(&format!("Attempting to create/rename: {} to {}", old_path.display(), new_path.display()));
+            
+            if let Some(fs) = &self.file_system {
+                if old_path.exists() {
+                    match fs.rename_file(&old_path, &new_path) {
+                        Ok(_) => {
+                            log(&format!("Renamed '{}' to '{}'", old_name, new_name));
+                            if let Some(current_file_path) = current_file {
+                                if current_file_path == old_path.to_str().unwrap() {
+                                    *current_file = Some(new_path.to_str().unwrap().to_string());
+                                }
+                            }
+                        }
+                        Err(e) => log(&format!("Error renaming: {}", e)),
+                    }
+                } else {
+                    let is_folder = !new_path.extension().is_some();
+                    if is_folder {
+                        match fs.create_directory(&new_path) {
+                            Ok(_) => log(&format!("Created new folder: {}", new_path.display())),
+                            Err(e) => log(&format!("Error creating folder: {}", e)),
+                        }
+                    } else {
+                        match fs.create_new_file(new_path.parent().unwrap(), &new_name) {
+                            Ok(_) => {
+                                *current_file = Some(new_path.to_str().unwrap().to_string());
+                                code.clear();
+                                log(&format!("Created new file: {}", new_path.display()));
+                            }
+                            Err(e) => log(&format!("Error creating file: {}", e)),
+                        }
+                    }
+                }
+                
+                if fs.path_exists(&new_path) {
+                    log(&format!("Confirmed: {} exists", new_path.display()));
+                } else {
+                    log(&format!("Warning: {} does not exist after creation attempt", new_path.display()));
+                }
+                
+                if let Some(parent) = new_path.parent() {
+                    self.expanded_folders.insert(parent.to_path_buf());
+                }
+            } else {
+                log("Error: File system not initialized");
+            }
+            self.rename_dialog = None;
+        }
+    }
+    
     fn create_new_item(&mut self, is_folder: bool, log: &mut dyn FnMut(&str)) {
+        log(&format!("Creating new {}", if is_folder { "folder" } else { "file" }));
         if let Some(fs) = &self.file_system {
             let parent_folder = if let Some(selected_folder) = &self.selected_folder {
                 selected_folder.clone()
@@ -95,14 +190,24 @@ impl FilePanel {
                 fs.get_project_directory().to_path_buf()
             };
 
+            log(&format!("Parent folder: {}", parent_folder.display()));
+
             let default_name = if is_folder {
                 format!("new_folder_{}", chrono::Utc::now().timestamp())
             } else {
                 format!("new_file_{}.txt", chrono::Utc::now().timestamp())
             };
 
-            self.rename_dialog = Some((parent_folder.join(&default_name), default_name));
-            log(&format!("Enter name for new {}", if is_folder { "folder" } else { "file" }));
+            log(&format!("Default name: {}", default_name));
+
+            let new_path = parent_folder.join(&default_name);
+            self.rename_dialog = Some((new_path.clone(), default_name.clone()));
+            log(&format!("Rename dialog set for new {} at path: {}", 
+                if is_folder { "folder" } else { "file" },
+                new_path.display()
+            ));
+        } else {
+            log("Error: File system not initialized");
         }
     }
 
@@ -122,6 +227,7 @@ impl FilePanel {
 
     fn render_folder_contents(
         ui: &mut egui::Ui,
+        ctx: &egui::Context,
         folder: &Path,
         fs: &Rc<FileSystem>,
         expanded_folders: &mut HashSet<PathBuf>,
@@ -147,12 +253,14 @@ impl FilePanel {
                 ui.horizontal(|ui| {
                     let response = if is_dir {
                         let header = egui::CollapsingHeader::new(text)
-                            .id_source(id);
+                            .id_source(id)
+                            .default_open(is_expanded);
 
                         let state = header.show(ui, |ui| {
                             if is_expanded {
                                 Self::render_folder_contents(
                                     ui,
+                                    ctx,
                                     &path,
                                     fs,
                                     expanded_folders,

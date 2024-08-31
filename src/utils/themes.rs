@@ -51,10 +51,11 @@ pub fn custom_theme(ctx: &egui::Context, theme: &Theme) -> egui::Visuals {
     let mut visuals = egui::Visuals::light();
     visuals.window_fill = theme.background_color;
     visuals.panel_fill = theme.background_color;
-    visuals.override_text_color = Some(theme.text_color);
+    visuals.override_text_color = None;
     visuals.selection.bg_fill = theme.accent_color;
     visuals.selection.stroke.color = theme.accent_color;
     visuals.widgets.noninteractive.bg_fill = theme.background_color;
+    visuals.widgets.noninteractive.fg_stroke.color = theme.text_color;
     visuals.widgets.inactive.bg_fill = theme.background_color;
     visuals.widgets.hovered.bg_fill = theme.accent_color.linear_multiply(0.3);
     visuals.widgets.active.bg_fill = theme.accent_color.linear_multiply(0.5);
