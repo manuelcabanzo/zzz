@@ -20,7 +20,7 @@ impl CodeEditor {
             current_file: None,
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
-            current_syntax: "Rust".to_string(), // Default to Rust syntax
+            current_syntax: "JS".to_string(), // Default to Rust syntax
         }
     }
 

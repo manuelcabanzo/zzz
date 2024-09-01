@@ -2,6 +2,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::rc::Rc;
 use crate::core::file_system::FileSystem;
+use rfd::FileDialog;
 
 use crate::components::{
     file_panel::FilePanel,
@@ -17,9 +18,7 @@ pub struct IDE {
     console_panel: ConsolePanel,
     emulator_panel: EmulatorPanel,
     settings_modal: SettingsModal,
-    #[allow(dead_code)]
     file_system: Option<Rc<FileSystem>>,
-    #[allow(dead_code)]
     project_path: Option<PathBuf>,
     show_file_panel: bool,
     show_console_panel: bool,
@@ -58,7 +57,22 @@ impl IDE {
             if i.key_pressed(egui::Key::M) && i.modifiers.ctrl {
                 self.settings_modal.show_settings_menu = !self.settings_modal.show_settings_menu;
             }
+            if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
+                self.open_folder();
+            }
         });
+    }
+
+    fn open_folder(&mut self) {
+        if let Some(folder_path) = FileDialog::new().pick_folder() {
+            self.project_path = Some(folder_path.clone());
+            self.file_system = Some(Rc::new(FileSystem::new(folder_path.to_str().unwrap())));
+            self.file_panel.project_path = Some(folder_path.clone());
+            self.file_panel.file_system = self.file_system.clone();
+            self.file_panel.expanded_folders.clear();
+            self.file_panel.expanded_folders.insert(folder_path.clone());
+            self.console_panel.log(&format!("Opened project: {}", folder_path.display()));
+        }
     }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
