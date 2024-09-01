@@ -63,20 +63,15 @@ impl IDE {
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_keyboard_shortcuts(ctx);
-        
+
         if self.show_file_panel {
-            self.file_panel.show(
-                ctx,
-                &mut self.code_editor.code,
-                &mut self.code_editor.current_file,
-                &mut |msg| self.console_panel.log(msg)
-            );
+            self.file_panel.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
         }
-        
+
         if self.show_emulator_panel {
             self.emulator_panel.show(ctx);
         }
-        
+
         egui::CentralPanel::default().show(ctx, |ui| {    
             let fixed_editor_height = 730.0;    
             let available_height = if self.show_console_panel {         
@@ -86,11 +81,11 @@ impl IDE {
             };    
             self.code_editor.show(ui, available_height);
         });
-        
+
         if self.show_console_panel {
             self.console_panel.show(ctx);
         }
-        
+
         self.settings_modal.show(ctx);
     }
 }

@@ -1,12 +1,10 @@
 pub mod core {
     pub mod ide;
     pub mod file_system;
-    pub mod syntax_highlighter; 
 }
 
 pub mod utils {
     pub mod themes;
-    //pub mod terminal;
 }
 
 pub mod components {

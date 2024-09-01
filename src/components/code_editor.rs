@@ -1,8 +1,16 @@
 use eframe::egui;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet, Style};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
+use std::sync::Arc;
 
 pub struct CodeEditor {
     pub code: String,
     pub current_file: Option<String>,
+    syntax_set: Arc<SyntaxSet>,
+    theme_set: Arc<ThemeSet>,
+    current_syntax: String,
 }
 
 impl CodeEditor {
@@ -10,6 +18,9 @@ impl CodeEditor {
         Self {
             code: String::new(),
             current_file: None,
+            syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
+            theme_set: Arc::new(ThemeSet::load_defaults()),
+            current_syntax: "Rust".to_string(), // Default to Rust syntax
         }
     }
 
@@ -18,15 +29,70 @@ impl CodeEditor {
         if let Some(file) = &self.current_file {
             ui.label(format!("Editing: {}", file));
         }
+
+        // Syntax selection dropdown
+        egui::ComboBox::from_label("Syntax")
+            .selected_text(&self.current_syntax)
+            .show_ui(ui, |ui| {
+                for syntax in self.syntax_set.syntaxes() {
+                    ui.selectable_value(&mut self.current_syntax, syntax.name.clone(), &syntax.name);
+                }
+            });
+
+        let syntax_set = Arc::clone(&self.syntax_set);
+        let theme_set = Arc::clone(&self.theme_set);
+        let current_syntax = self.current_syntax.clone();
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                    let mut layout_job = highlight_syntax(ui, string, &syntax_set, &theme_set, &current_syntax);
+                    layout_job.wrap.max_width = wrap_width;
+                    ui.fonts(|f| f.layout_job(layout_job))
+                };
+
                 let text_edit = egui::TextEdit::multiline(&mut self.code)
-                    .desired_width(f32::INFINITY);
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace)
+                    .layouter(&mut layouter);
+
                 let frame = egui::Frame::none().inner_margin(4.0);
                 frame.show(ui, |ui| {
                     ui.add_sized([ui.available_width(), available_height], text_edit);
                 });
             });
+    }
+}
+
+fn highlight_syntax(
+    _ui: &egui::Ui,
+    code: &str,
+    syntax_set: &SyntaxSet,
+    theme_set: &ThemeSet,
+    current_syntax: &str,
+) -> egui::text::LayoutJob {
+    let syntax = syntax_set.find_syntax_by_name(current_syntax)
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+    let mut highlighter = HighlightLines::new(syntax, &theme_set.themes["base16-ocean.dark"]);
+
+    let mut job = egui::text::LayoutJob::default();
+
+    for line in LinesWithEndings::from(code) {
+        let highlighted = highlighter.highlight_line(line, syntax_set).unwrap();
+        for (style, text) in highlighted {
+            job.append(text, 0.0, style_to_text_format(style));
+        }
+    }
+
+    job
+}
+
+fn style_to_text_format(style: Style) -> egui::TextFormat {
+    let color = egui::Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+    egui::TextFormat {
+        font_id: egui::FontId::monospace(14.0),
+        color,
+        ..egui::TextFormat::default()
     }
 }
