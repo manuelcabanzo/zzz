@@ -12,6 +12,7 @@ serde = "1.0.209"
 chrono = "0.4.38"
 rfd = "0.14.1"
 crossterm = "0.28.1"
+tui = "0.19.0"
 
 [lib]
 name = "zzz"

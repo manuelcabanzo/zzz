@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use crate::core::file_system::FileSystem;
 use rfd::FileDialog;
-
 use crate::components::{
     file_panel::FilePanel,
     code_editor::CodeEditor,
@@ -77,7 +76,8 @@ impl IDE {
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_keyboard_shortcuts(ctx);
-
+        self.console_panel.update(); // Update the console panel (including terminal)
+        
         if self.show_file_panel {
             self.file_panel.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
         }
@@ -107,5 +107,6 @@ impl IDE {
 impl eframe::App for IDE {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.update(ctx, frame);
+        self.settings_modal.show(ctx);
     }
 }

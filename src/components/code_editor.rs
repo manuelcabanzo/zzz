@@ -20,7 +20,7 @@ impl CodeEditor {
             current_file: None,
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
-            current_syntax: "JS".to_string(), // Default to Rust syntax
+            current_syntax: "JavaScript".to_string(), 
         }
     }
 
@@ -91,7 +91,6 @@ fn highlight_syntax(
 fn style_to_text_format(style: Style) -> egui::TextFormat {
     let color = egui::Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b);
     egui::TextFormat {
-        font_id: egui::FontId::monospace(14.0),
         color,
         ..egui::TextFormat::default()
     }
