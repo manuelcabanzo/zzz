@@ -2,14 +2,12 @@ use eframe::egui;
 use crate::core::terminal::Terminal;
 
 pub struct ConsolePanel {
-    pub console_output: String,
     terminal: Terminal,
 }
 
 impl ConsolePanel {
     pub fn new() -> Self {
         Self {
-            console_output: String::new(),
             terminal: Terminal::new(),
         }
     }
@@ -22,31 +20,16 @@ impl ConsolePanel {
                 ui.horizontal(|ui| {
                     ui.heading("Console");
                     if ui.button("Clear").clicked() {
-                        self.console_output.clear();
+                        self.terminal.clear_output();
                     }
                 });
 
-                egui::TopBottomPanel::bottom("terminal")
-                    .resizable(true)
-                    .default_height(150.0)
-                    .show_inside(ui, |ui| {
-                        ui.heading("Terminal");
-                        self.terminal.render(ui);
-                    });
-
-                let scroll_area = egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .stick_to_bottom(true);
-                scroll_area.show(ui, |ui| {
-                    ui.label(&self.console_output);
-                });
+                self.terminal.render(ui);
             });
     }
 
     pub fn log(&mut self, message: &str) {
-        self.console_output.push_str(message);
-        self.console_output.push('\n');
-        println!("{}", message);
+        self.terminal.append_log(message);
     }
 
     pub fn update(&mut self) {

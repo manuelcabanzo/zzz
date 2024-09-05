@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use eframe::egui;
@@ -19,8 +20,10 @@ impl Terminal {
         thread::spawn(move || {
             loop {
                 if let Ok(input) = input_rx.recv() {
-                    let output = execute_command(&input);
-                    output_tx.send(output).expect("Failed to send output");
+                    let output_tx_clone = output_tx.clone();
+                    thread::spawn(move || {
+                        execute_command(&input, output_tx_clone);
+                    });
                 }
             }
         });
@@ -60,26 +63,62 @@ impl Terminal {
             });
         });
     }
+
+    pub fn append_log(&mut self, message: &str) {
+        self.output.push_back(message.to_string());
+        if self.output.len() > 100 {
+            self.output.pop_front();
+        }
+        println!("{}", message);
+    }
+
+    pub fn clear_output(&mut self) {
+        self.output.clear();
+    }
 }
 
-fn execute_command(command: &str) -> String {
-    let output = if cfg!(target_os = "windows") {
+fn execute_command(command: &str, output_tx: Sender<String>) {
+    let process = if cfg!(target_os = "windows") {
         Command::new("cmd")
             .args(&["/C", command])
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
     } else {
         Command::new("sh")
             .arg("-c")
-            .arg(command)
-            .output()
+            .arg(format!("stdbuf -oL -eL {}", command)) // Use stdbuf to disable buffering
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
     };
 
-    match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            format!("{}\n{}", stdout, stderr)
+    if let Ok(mut process) = process {
+        if let Some(stdout) = process.stdout.take() {
+            let stdout_reader = BufReader::new(stdout);
+            let output_tx_clone = output_tx.clone();
+            thread::spawn(move || {
+                for line in stdout_reader.lines() {
+                    if let Ok(line) = line {
+                        output_tx_clone.send(line).expect("Failed to send stdout line");
+                    }
+                }
+            });
         }
-        Err(e) => format!("Failed to execute command: {}", e),
+
+        if let Some(stderr) = process.stderr.take() {
+            let stderr_reader = BufReader::new(stderr);
+            thread::spawn(move || {
+                for line in stderr_reader.lines() {
+                    if let Ok(line) = line {
+                        output_tx.send(line).expect("Failed to send stderr line");
+                    }
+                }
+            });
+        }
+
+        let _ = process.wait(); // Wait for the process to finish
+    } else {
+        let _ = output_tx.send("Failed to execute command".to_string());
     }
 }
