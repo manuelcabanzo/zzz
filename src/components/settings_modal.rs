@@ -62,7 +62,7 @@ impl SettingsModal {
     fn show_personalization_settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("Personalization");
         ui.add_space(10.0);
-       
+
         if ui.button("Cream Theme").clicked() {
             self.current_theme = Theme::cream();
             self.apply_theme(ui.ctx());

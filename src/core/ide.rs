@@ -19,6 +19,7 @@ use lsp_types::{
 use std::sync::Arc;
 use crate::core::lsp_server;
 use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
 
 pub struct IDE {
     file_panel: FilePanel,
@@ -33,11 +34,25 @@ pub struct IDE {
     show_emulator_panel: bool,
     lsp_client: Option<Arc<LspClient>>,
     runtime: Runtime,
+    shutdown_sender: Option<oneshot::Sender<()>>,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+
+
+        runtime.spawn(async move {
+            tokio::select! {
+                _ = lsp_server::start_lsp_server() => {},
+                _ = shutdown_receiver => {
+                    // Perform cleanup operations here
+                    println!("LSP server shutting down");
+                }
+            }
+        });
 
         let ide = Self {
             file_panel: FilePanel::new(),
@@ -52,6 +67,7 @@ impl IDE {
             show_emulator_panel: false,
             lsp_client: None,
             runtime,
+            shutdown_sender: Some(shutdown_sender),
         };
         ide.settings_modal.apply_theme(&cc.egui_ctx);
 
@@ -159,6 +175,14 @@ impl IDE {
         }
 
         self.settings_modal.show(ctx);
+    }
+}
+
+impl Drop for IDE {
+    fn drop(&mut self) {
+        if let Some(sender) = self.shutdown_sender.take() {
+            let _ = sender.send(());
+        }
     }
 }
 

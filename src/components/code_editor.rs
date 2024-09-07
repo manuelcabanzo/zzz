@@ -3,9 +3,9 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Handle;
-use lsp_types::{CompletionParams, TextDocumentPositionParams, Position, Url};
+use lsp_types::{CompletionParams, CompletionResponse, TextDocumentPositionParams, Position, Url, HoverContents, HoverParams, MarkedString};
 use crate::core::lsp_client::LspClient;
 
 pub struct CodeEditor {
@@ -16,8 +16,9 @@ pub struct CodeEditor {
     current_syntax: String,
     lsp_client: Option<Arc<LspClient>>,
     runtime: Handle,
-    completion_items: Vec<String>,
-    hover_text: Option<String>,
+    completion_items: Arc<Mutex<Vec<String>>>,
+    hover_text: Arc<Mutex<Option<String>>>,   
+    needs_update: Arc<Mutex<bool>>,
     cursor_position: Position,
 }
 
@@ -31,9 +32,10 @@ impl CodeEditor {
             current_syntax: "JavaScript".to_string(),
             lsp_client: None,
             runtime,
-            completion_items: Vec::new(),
-            hover_text: None,
+            completion_items: Arc::new(Mutex::new(Vec::new())),
+            hover_text: Arc::new(Mutex::new(None)),
             cursor_position: Position::new(0, 0),
+            needs_update: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -88,12 +90,18 @@ impl CodeEditor {
                     self.update_hover();
                 }
 
+                if *self.needs_update.lock().unwrap() {
+                    ui.ctx().request_repaint();
+                    *self.needs_update.lock().unwrap() = false;
+                }
+
                 // Display completion items
-                if !self.completion_items.is_empty() {
+                let completion_items = self.completion_items.lock().unwrap().clone();
+                if !completion_items.is_empty() {
                     egui::Window::new("Completions")
                         .fixed_pos(ui.cursor().min)
                         .show(ui.ctx(), |ui| {
-                            for item in &self.completion_items {
+                            for item in &completion_items {
                                 if ui.button(item).clicked() {
                                     // Insert the completion item at the cursor position
                                     let (start, end) = self.get_word_boundaries();
@@ -104,7 +112,7 @@ impl CodeEditor {
                 }
 
                 // Display hover information
-                if let Some(hover_text) = &self.hover_text {
+                if let Some(hover_text) = &*self.hover_text.lock().unwrap() {
                     egui::Window::new("Hover")
                         .fixed_pos(ui.cursor().min + egui::vec2(0.0, 20.0))
                         .show(ui.ctx(), |ui| {
@@ -148,15 +156,22 @@ impl CodeEditor {
         }
     }
 
-    fn update_completion(&mut self) {
+    fn update_completion(&self) {
         if let (Some(lsp_client), Some(current_file)) = (&self.lsp_client, &self.current_file) {
             let lsp_client = Arc::clone(lsp_client);
             let position = self.cursor_position.clone();
-            let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
-            let runtime = self.runtime.clone();
-            let completion_items = self.completion_items.clone();
-            runtime.spawn(async move {
-                if let Ok(Some(completion_response)) = lsp_client.completion(CompletionParams {
+            let uri = match Url::from_file_path(current_file) {
+                Ok(uri) => uri,
+                Err(_) => {
+                    eprintln!("Failed to create URL from path: {}", current_file);
+                    return;
+                }
+            };
+            let completion_items = Arc::clone(&self.completion_items);
+            let needs_update = Arc::clone(&self.needs_update);
+
+            self.runtime.spawn(async move {
+                let completion_params = CompletionParams {
                     text_document_position: TextDocumentPositionParams {
                         text_document: lsp_types::TextDocumentIdentifier { uri },
                         position,
@@ -164,41 +179,94 @@ impl CodeEditor {
                     context: None,
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
-                }).await {
-                    // Update completion items
-                    if let Some(items) = completion_response.items {
-                        let new_items: Vec<String> = items.into_iter()
-                            .map(|item| item.label)
-                            .collect();
-                        *completion_items.lock().unwrap() = new_items;
+                };
+
+                match lsp_client.completion(completion_params).await {
+                    Ok(Some(completion_response)) => {
+                        let new_items = match completion_response {
+                            CompletionResponse::Array(items) => {
+                                items.into_iter().map(|item| item.label).collect()
+                            },
+                            CompletionResponse::List(list) => {
+                                list.items.into_iter().map(|item| item.label).collect()
+                            },
+                        };
+
+                        if let Ok(mut items) = completion_items.lock() {
+                            *items = new_items;
+                            if let Ok(mut update) = needs_update.lock() {
+                                *update = true;
+                            }
+                        }
+                    },
+                    Ok(None) => {
+                        eprintln!("No completion items returned");
+                    },
+                    Err(e) => {
+                        eprintln!("Error getting completions: {:?}", e);
                     }
                 }
             });
         }
     }
 
-    fn update_hover(&mut self) {
+    fn update_hover(&self) {
         if let (Some(lsp_client), Some(current_file)) = (&self.lsp_client, &self.current_file) {
             let lsp_client = Arc::clone(lsp_client);
             let position = self.cursor_position.clone();
-            let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
-            let runtime = self.runtime.clone();
-            let hover_text = self.hover_text.clone();
-            runtime.spawn(async move {
-                if let Ok(Some(hover)) = lsp_client.hover(lsp_types::HoverParams {
+            let uri = match Url::from_file_path(current_file) {
+                Ok(uri) => uri,
+                Err(_) => {
+                    eprintln!("Failed to create URL from path: {}", current_file);
+                    return;
+                }
+            };
+            let hover_text = Arc::clone(&self.hover_text);
+            let needs_update = Arc::clone(&self.needs_update);
+
+            self.runtime.spawn(async move {
+                let hover_params = HoverParams {
                     text_document_position_params: TextDocumentPositionParams {
                         text_document: lsp_types::TextDocumentIdentifier { uri },
                         position,
                     },
                     work_done_progress_params: Default::default(),
-                }).await {
-                    // Update hover text
-                    if let Some(contents) = hover.contents.as_markup_content() {
-                        *hover_text.lock().unwrap() = Some(contents.value.clone());
+                };
+
+                match lsp_client.hover(hover_params).await {
+                    Ok(Some(hover)) => {
+                        let new_text = match hover.contents {
+                            HoverContents::Scalar(scalar) => marked_string_to_string(scalar),
+                            HoverContents::Array(array) => array.into_iter()
+                                .map(marked_string_to_string)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            HoverContents::Markup(markup) => markup.value,
+                        };
+
+                        if let Ok(mut text) = hover_text.lock() {
+                            *text = Some(new_text);
+                            if let Ok(mut update) = needs_update.lock() {
+                                *update = true;
+                            }
+                        }
+                    },
+                    Ok(None) => {
+                        eprintln!("No hover information returned");
+                    },
+                    Err(e) => {
+                        eprintln!("Error getting hover information: {:?}", e);
                     }
                 }
             });
         }
+    }
+}
+
+fn marked_string_to_string(marked: MarkedString) -> String {
+    match marked {
+        MarkedString::String(s) => s,
+        MarkedString::LanguageString(lang_string) => format!("```{}\n{}\n```", lang_string.language, lang_string.value),
     }
 }
 

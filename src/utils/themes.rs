@@ -7,6 +7,7 @@ pub struct Theme {
     pub font_family: String,
     #[allow(dead_code)]
     pub font_size: f32,
+    pub extreme_bg_color: Color32,
 }
 
 impl Theme {
@@ -18,6 +19,7 @@ impl Theme {
             accent_color: Color32::from_rgb(0, 122, 204),
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            extreme_bg_color: Color32::from_rgb(30, 30, 30),
         }
     }
 
@@ -28,6 +30,7 @@ impl Theme {
             accent_color: Color32::from_rgb(0, 122, 204),
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            extreme_bg_color: Color32::from_rgb(30, 30, 30),
         }
     }
 
@@ -38,6 +41,7 @@ impl Theme {
             accent_color: Color32::from_rgb(255, 105, 180),     // Hot pink accent
             font_family: "JetBrains Mono".to_string(),
             font_size: 14.0,
+            extreme_bg_color: Color32::from_rgb(30, 30, 30),
         }
     }
 }
