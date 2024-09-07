@@ -62,17 +62,17 @@ impl SettingsModal {
     fn show_personalization_settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("Personalization");
         ui.add_space(10.0);
-        
-        if ui.button("Light Theme").clicked() {
-            self.current_theme = Theme::light();
+       
+        if ui.button("Cream Theme").clicked() {
+            self.current_theme = Theme::cream();
             self.apply_theme(ui.ctx());
         }
-        if ui.button("Dark Theme").clicked() {
-            self.current_theme = Theme::dark();
+        if ui.button("Black Theme").clicked() {
+            self.current_theme = Theme::black();
             self.apply_theme(ui.ctx());
         }
-        if ui.button("Custom Theme").clicked() {
-            self.current_theme = Theme::custom();
+        if ui.button("Purple Theme").clicked() {
+            self.current_theme = Theme::purple();
             self.apply_theme(ui.ctx());
         }
     }

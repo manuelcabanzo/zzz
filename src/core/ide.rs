@@ -10,6 +10,15 @@ use crate::components::{
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
 };
+use crate::core::lsp_client::LspClient;
+use lsp_types::{
+    InitializeParams, ClientCapabilities, Url,
+    DidChangeTextDocumentParams, VersionedTextDocumentIdentifier,
+    TextDocumentContentChangeEvent,
+};
+use std::sync::Arc;
+use crate::core::lsp_server;
+use tokio::runtime::Runtime;
 
 pub struct IDE {
     file_panel: FilePanel,
@@ -22,13 +31,17 @@ pub struct IDE {
     show_file_panel: bool,
     show_console_panel: bool,
     show_emulator_panel: bool,
+    lsp_client: Option<Arc<LspClient>>,
+    runtime: Runtime,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+
         let ide = Self {
             file_panel: FilePanel::new(),
-            code_editor: CodeEditor::new(),
+            code_editor: CodeEditor::new(runtime.handle().clone()),
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
@@ -37,8 +50,16 @@ impl IDE {
             show_file_panel: false,
             show_console_panel: false,
             show_emulator_panel: false,
+            lsp_client: None,
+            runtime,
         };
         ide.settings_modal.apply_theme(&cc.egui_ctx);
+
+        // Start the LSP server
+        ide.runtime.spawn(async {
+            lsp_server::start_lsp_server().await;
+        });
+
         ide
     }
 
@@ -71,12 +92,28 @@ impl IDE {
             self.file_panel.expanded_folders.clear();
             self.file_panel.expanded_folders.insert(folder_path.clone());
             self.console_panel.log(&format!("Opened project: {}", folder_path.display()));
+
+            self.runtime.block_on(async {
+                let lsp_client = Arc::new(LspClient::new());
+                self.lsp_client = Some(lsp_client.clone());
+
+                let root_uri = Url::from_file_path(folder_path).expect("Failed to create URL from path");
+                let init_params = InitializeParams {
+                    root_uri: Some(root_uri),
+                    capabilities: ClientCapabilities::default(),
+                    ..InitializeParams::default()
+                };
+                lsp_client.initialize(init_params).await.expect("Failed to initialize LSP client");
+                
+                // Set the LSP client for the code editor
+                self.code_editor.set_lsp_client(lsp_client);
+            });              
         }
-    }
+    }   
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_keyboard_shortcuts(ctx);
-        self.console_panel.update(); // Update the console panel (including terminal)
+        self.console_panel.update();
         
         if self.show_file_panel {
             self.file_panel.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
@@ -94,6 +131,27 @@ impl IDE {
                 fixed_editor_height    
             };    
             self.code_editor.show(ui, available_height);
+
+            if let Some(lsp_client) = &self.lsp_client {
+                if let Some(current_file) = &self.code_editor.current_file {
+                    let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
+                    let lsp_client_clone = Arc::clone(lsp_client);
+                    let code = self.code_editor.code.clone();
+                    self.runtime.spawn(async move {
+                        lsp_client_clone.did_change(DidChangeTextDocumentParams {
+                            text_document: VersionedTextDocumentIdentifier {
+                                uri: uri.clone(),
+                                version: 0, // You might want to implement proper versioning
+                            },
+                            content_changes: vec![TextDocumentContentChangeEvent {
+                                range: None,
+                                range_length: None,
+                                text: code,
+                            }],
+                        }).await;
+                    });
+                }
+            }        
         });
 
         if self.show_console_panel {

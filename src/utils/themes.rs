@@ -10,7 +10,8 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn light() -> Self {
+
+    pub fn cream() -> Self {
         Self {
             background_color: Color32::from_rgb(240, 240, 240),
             text_color: Color32::from_rgb(0, 0, 0),
@@ -20,7 +21,7 @@ impl Theme {
         }
     }
 
-    pub fn dark() -> Self {
+    pub fn black() -> Self {
         Self {
             background_color: Color32::from_rgb(30, 30, 40),
             text_color: Color32::from_rgb(255, 255, 255),
@@ -30,7 +31,7 @@ impl Theme {
         }
     }
 
-    pub fn custom() -> Self {
+    pub fn purple() -> Self {
         Self {
             background_color: Color32::from_rgb(230, 230, 250), // Light purple background
             text_color: Color32::from_rgb(25, 25, 112),         // Dark blue text
@@ -43,7 +44,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::light()
+        Self::purple()
     }
 }
 

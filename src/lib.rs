@@ -2,6 +2,8 @@ pub mod core {
     pub mod ide;
     pub mod file_system;
     pub mod terminal;
+    pub mod lsp_server;
+    pub mod lsp_client;
 }
 
 pub mod utils {
