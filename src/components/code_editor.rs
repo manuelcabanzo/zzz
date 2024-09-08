@@ -4,18 +4,31 @@ use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::{Arc, Mutex};
-use tokio::runtime::Handle;
-use lsp_types::{CompletionParams, CompletionResponse, TextDocumentPositionParams, Position, Url, HoverContents, HoverParams, MarkedString};
+use lsp_types::{
+    CompletionParams, 
+    CompletionResponse, 
+    TextDocumentPositionParams,
+    VersionedTextDocumentIdentifier,
+    DidChangeTextDocumentParams,
+    TextDocumentContentChangeEvent,
+    Position, 
+    Url, 
+    HoverContents, 
+    HoverParams, 
+    MarkedString
+};
+use tokio::runtime::Runtime;
 use crate::core::lsp_client::LspClient;
+
 
 pub struct CodeEditor {
     pub code: String,
     pub current_file: Option<String>,
     syntax_set: Arc<SyntaxSet>,
+    runtime: Arc<Runtime>,
     theme_set: Arc<ThemeSet>,
     current_syntax: String,
     lsp_client: Option<Arc<LspClient>>,
-    runtime: Handle,
     completion_items: Arc<Mutex<Vec<String>>>,
     hover_text: Arc<Mutex<Option<String>>>,   
     needs_update: Arc<Mutex<bool>>,
@@ -23,7 +36,7 @@ pub struct CodeEditor {
 }
 
 impl CodeEditor {
-    pub fn new(runtime: Handle) -> Self {
+    pub fn new(runtime: Arc<Runtime>) -> Self {
         Self {
             code: String::new(),
             current_file: None,
@@ -95,11 +108,16 @@ impl CodeEditor {
                     *self.needs_update.lock().unwrap() = false;
                 }
 
+                if response.changed() {
+                    self.update_lsp();
+                }
+
                 // Display completion items
+                
                 let completion_items = self.completion_items.lock().unwrap().clone();
                 if !completion_items.is_empty() {
                     egui::Window::new("Completions")
-                        .fixed_pos(ui.cursor().min)
+                        .fixed_pos(response.rect.left_bottom())
                         .show(ui.ctx(), |ui| {
                             for item in &completion_items {
                                 if ui.button(item).clicked() {
@@ -111,14 +129,40 @@ impl CodeEditor {
                         });
                 }
 
+                if let Some(lsp_client) = &self.lsp_client {
+                    if let Some(current_file) = &self.current_file {
+                        let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
+                        let lsp_client_clone = Arc::clone(lsp_client);
+                        let code = self.code.clone();
+                        let runtime = Arc::clone(&self.runtime);
+
+                        // Use spawn_blocking for potentially blocking operations
+                        std::thread::spawn(move || {
+                            runtime.block_on(async move {
+                                lsp_client_clone.did_change(DidChangeTextDocumentParams {
+                                    text_document: VersionedTextDocumentIdentifier {
+                                        uri: uri.clone(),
+                                        version: 0, // You might want to implement proper versioning
+                                    },
+                                    content_changes: vec![TextDocumentContentChangeEvent {
+                                        range: None,
+                                        range_length: None,
+                                        text: code,
+                                    }],
+                                }).await;
+                            });
+                        });
+                    }
+                }
+
                 // Display hover information
                 if let Some(hover_text) = &*self.hover_text.lock().unwrap() {
                     egui::Window::new("Hover")
-                        .fixed_pos(ui.cursor().min + egui::vec2(0.0, 20.0))
+                        .fixed_pos(response.rect.left_top() + egui::vec2(0.0, -30.0))
                         .show(ui.ctx(), |ui| {
                             ui.label(hover_text);
                         });
-                }
+                }       
             });
     }
 
@@ -140,13 +184,13 @@ impl CodeEditor {
             let lsp_client = Arc::clone(lsp_client);
             let code = self.code.clone();
             let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
-            self.runtime.spawn(async move {
-                lsp_client.did_change(lsp_types::DidChangeTextDocumentParams {
-                    text_document: lsp_types::VersionedTextDocumentIdentifier {
+            tokio::spawn(async move {
+                lsp_client.did_change(DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier {
                         uri,
-                        version: 0, // You might want to implement proper versioning
+                        version: 0,
                     },
-                    content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                    content_changes: vec![TextDocumentContentChangeEvent {
                         range: None,
                         range_length: None,
                         text: code,
@@ -170,7 +214,7 @@ impl CodeEditor {
             let completion_items = Arc::clone(&self.completion_items);
             let needs_update = Arc::clone(&self.needs_update);
 
-            self.runtime.spawn(async move {
+            tokio::spawn(async move {
                 let completion_params = CompletionParams {
                     text_document_position: TextDocumentPositionParams {
                         text_document: lsp_types::TextDocumentIdentifier { uri },
@@ -224,7 +268,7 @@ impl CodeEditor {
             let hover_text = Arc::clone(&self.hover_text);
             let needs_update = Arc::clone(&self.needs_update);
 
-            self.runtime.spawn(async move {
+            tokio::spawn(async move {
                 let hover_params = HoverParams {
                     text_document_position_params: TextDocumentPositionParams {
                         text_document: lsp_types::TextDocumentIdentifier { uri },

@@ -33,30 +33,26 @@ pub struct IDE {
     show_console_panel: bool,
     show_emulator_panel: bool,
     lsp_client: Option<Arc<LspClient>>,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     shutdown_sender: Option<oneshot::Sender<()>>,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
 
-        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
-        let runtime = Runtime::new().expect("Failed to create Tokio runtime");
+        let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
+        let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
-
-        runtime.spawn(async move {
-            tokio::select! {
-                _ = lsp_server::start_lsp_server() => {},
-                _ = shutdown_receiver => {
-                    // Perform cleanup operations here
-                    println!("LSP server shutting down");
-                }
-            }
+        let runtime_clone = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            runtime_clone.block_on(async {
+                lsp_server::start_lsp_server().await;
+            });
         });
 
         let ide = Self {
             file_panel: FilePanel::new(),
-            code_editor: CodeEditor::new(runtime.handle().clone()),
+            code_editor: CodeEditor::new(Arc::clone(&runtime)),
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
@@ -70,11 +66,6 @@ impl IDE {
             shutdown_sender: Some(shutdown_sender),
         };
         ide.settings_modal.apply_theme(&cc.egui_ctx);
-
-        // Start the LSP server
-        ide.runtime.spawn(async {
-            lsp_server::start_lsp_server().await;
-        });
 
         ide
     }
@@ -109,23 +100,29 @@ impl IDE {
             self.file_panel.expanded_folders.insert(folder_path.clone());
             self.console_panel.log(&format!("Opened project: {}", folder_path.display()));
 
+            // Use the existing runtime to initialize the LSP client
             self.runtime.block_on(async {
                 let lsp_client = Arc::new(LspClient::new());
-                self.lsp_client = Some(lsp_client.clone());
 
-                let root_uri = Url::from_file_path(folder_path).expect("Failed to create URL from path");
+                let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
                 let init_params = InitializeParams {
                     root_uri: Some(root_uri),
                     capabilities: ClientCapabilities::default(),
                     ..InitializeParams::default()
                 };
-                lsp_client.initialize(init_params).await.expect("Failed to initialize LSP client");
-                
-                // Set the LSP client for the code editor
-                self.code_editor.set_lsp_client(lsp_client);
-            });              
+                match lsp_client.initialize(init_params).await {
+                    Ok(_) => {
+                        self.lsp_client = Some(lsp_client.clone());
+                        self.code_editor.set_lsp_client(lsp_client);
+                        self.console_panel.log("LSP client initialized successfully");
+                    },
+                    Err(e) => {
+                        self.console_panel.log(&format!("Failed to initialize LSP client: {:?}", e));
+                    }
+                }
+            });
         }
-    }   
+    }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_keyboard_shortcuts(ctx);
