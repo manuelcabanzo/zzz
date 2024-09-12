@@ -16,4 +16,11 @@ pub mod components {
     pub mod console_panel;
     pub mod emulator_panel;
     pub mod settings_modal;
+    pub mod ui {
+        mod modal;
+        mod context_menu;
+
+        pub use modal::Modal;
+        pub use context_menu::context_menu;
+    }
 }

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 use rfd::FileDialog;
 use crate::core::file_system::FileSystem;
-
+use crate::components::ui::context_menu;
 pub struct FilePanel {
     pub file_system: Option<Rc<FileSystem>>,
     pub project_path: Option<PathBuf>,
@@ -248,76 +248,58 @@ impl FilePanel {
                 } else {
                     format!("📄 {}", entry.name)
                 };
-                let is_selected = selected_folder.as_ref().map_or(false, |sf| sf == &path);
 
-                ui.horizontal(|ui| {
-                    let response = if is_dir {
-                        let header = egui::CollapsingHeader::new(text)
-                            .id_source(id)
-                            .default_open(is_expanded);
+                let response = if is_dir {
+                    let header = egui::CollapsingHeader::new(text)
+                        .id_source(id)
+                        .default_open(is_expanded);
+                    let state = header.show(ui, |ui| {
+                        if is_expanded {
+                            Self::render_folder_contents(
+                                ui, ctx, &path, fs, expanded_folders, code, current_file,
+                                log, rename_dialog, selected_folder,
+                            );
+                        }
+                    });
+                    state.header_response
+                } else {
+                    ui.selectable_label(false, text)
+                };
 
-                        let state = header.show(ui, |ui| {
-                            if is_expanded {
-                                Self::render_folder_contents(
-                                    ui,
-                                    ctx,
-                                    &path,
-                                    fs,
-                                    expanded_folders,
-                                    code,
-                                    current_file,
-                                    log,
-                                    rename_dialog,
-                                    selected_folder,
-                                );
-                            }
-                        });
-
-                        state.header_response.clone()
-                    } else {
-                        ui.label(text)
-                    };
-
-                    if is_selected {
-                        response.clone().highlight();
-                    }
-
-                    if response.clicked() {
-                        if is_dir {
-                            if is_expanded {
-                                expanded_folders.remove(&path);
-                            } else {
-                                expanded_folders.insert(path.clone());
-                            }
-                            *selected_folder = Some(path.clone());
+                if response.clicked() {
+                    if is_dir {
+                        if is_expanded {
+                            expanded_folders.remove(&path);
                         } else {
-                            match fs.open_file(&path) {
-                                Ok(content) => {
-                                    *code = content;
-                                    *current_file = Some(path.to_str().unwrap().to_string());
-                                    log(&format!("Opened file: {}", path.display()));
-                                }
-                                Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
+                            expanded_folders.insert(path.clone());
+                        }
+                        *selected_folder = Some(path.clone());
+                    } else {
+                        match fs.open_file(&path) {
+                            Ok(content) => {
+                                *code = content;
+                                *current_file = Some(path.to_str().unwrap().to_string());
+                                log(&format!("Opened file: {}", path.display()));
                             }
+                            Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
                         }
                     }
+                }
 
-                    if ui.button("🖊").on_hover_text("Rename").clicked() {
+                let mut menu_id = None;
+                let mut is_menu_open = false;
+                context_menu(ui, |ui| {
+                    if ui.button("Rename").clicked() {
                         *rename_dialog = Some((path.clone(), entry.name.clone()));
+                        ui.close_menu();
                     }
-                    if ui.button("🗑").on_hover_text("Delete").clicked() {
+                    if ui.button("Delete").clicked() {
                         if let Err(e) = fs.delete_file(&path) {
                             log(&format!("Error deleting {}: {}", path.display(), e));
-                        } else {
-                            log(&format!("Deleted {}: {}", if is_dir { "folder" } else { "file" }, path.display()));
-                            if !is_dir && current_file.as_ref().map(|f| f == path.to_str().unwrap()).unwrap_or(false) {
-                                *current_file = None;
-                                *code = String::new();
-                            }
-                            expanded_folders.remove(&path);
                         }
+                        ui.close_menu();
                     }
-                });
+                }, &mut menu_id, &mut is_menu_open);
             }
         } else {
             log(&format!("Error reading directory: {}", folder.display()));

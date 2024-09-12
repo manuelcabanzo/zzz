@@ -9,29 +9,30 @@ pub enum SettingsTab {
 }
 
 pub struct SettingsModal {
-    pub show_settings_menu: bool,
-    pub settings_tab: SettingsTab,
-    pub current_theme: Theme,
+    pub show: bool,
+    settings_tab: SettingsTab,
+    current_theme: Theme,
 }
 
 impl SettingsModal {
     pub fn new() -> Self {
         Self {
-            show_settings_menu: false,
+            show: false,
             settings_tab: SettingsTab::Personalization,
             current_theme: Theme::default(),
         }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
-        if self.show_settings_menu {
-            let modal = egui::Window::new("Settings")
-                .collapsible(false)
-                .resizable(false)
-                .fixed_size([1000.0, 600.0])
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
+        if !self.show {
+            return;
+        }
 
-            modal.show(ctx, |ui| {
+        egui::Window::new("Settings")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
                 ui.heading("Settings");
                 ui.add_space(10.0);
 
@@ -45,35 +46,35 @@ impl SettingsModal {
 
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     match self.settings_tab {
-                        SettingsTab::Personalization => self.show_personalization_settings(ui),
+                        SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                         SettingsTab::General => self.show_general_settings(ui),
                         SettingsTab::Editor => self.show_editor_settings(ui),
                     }
                 });
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.add_space(10.0);
-                    ui.label("Press Ctrl+M to close this menu");
+                    if ui.button("Close").clicked() {
+                        self.show = false;
+                    }
                 });
             });
-        }
     }
 
-    fn show_personalization_settings(&mut self, ui: &mut egui::Ui) {
+    fn show_personalization_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Personalization");
         ui.add_space(10.0);
 
         if ui.button("Cream Theme").clicked() {
             self.current_theme = Theme::cream();
-            self.apply_theme(ui.ctx());
+            self.apply_theme(ctx);
         }
         if ui.button("Black Theme").clicked() {
             self.current_theme = Theme::black();
-            self.apply_theme(ui.ctx());
+            self.apply_theme(ctx);
         }
         if ui.button("Purple Theme").clicked() {
             self.current_theme = Theme::purple();
-            self.apply_theme(ui.ctx());
+            self.apply_theme(ctx);
         }
     }
 

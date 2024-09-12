@@ -20,6 +20,7 @@ use std::sync::Arc;
 use crate::core::lsp_server;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
+use std::process;
 
 pub struct IDE {
     file_panel: FilePanel,
@@ -35,6 +36,10 @@ pub struct IDE {
     lsp_client: Option<Arc<LspClient>>,
     runtime: Arc<Runtime>,
     shutdown_sender: Option<oneshot::Sender<()>>,
+    title: String,
+    is_dragging: bool,
+    drag_start: Option<egui::Pos2>,
+    window_pos: egui::Pos2,
 }
 
 impl IDE {
@@ -64,6 +69,11 @@ impl IDE {
             lsp_client: None,
             runtime,
             shutdown_sender: Some(shutdown_sender),
+            title: "ZZZ IDE".to_string(),
+            is_dragging: false,
+            drag_start: None,
+            window_pos: egui::Pos2::ZERO,
+
         };
         ide.settings_modal.apply_theme(&cc.egui_ctx);
 
@@ -82,7 +92,7 @@ impl IDE {
                 self.show_console_panel = !self.show_console_panel;
             }
             if i.key_pressed(egui::Key::M) && i.modifiers.ctrl {
-                self.settings_modal.show_settings_menu = !self.settings_modal.show_settings_menu;
+                self.settings_modal.show = !self.settings_modal.show;
             }
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
                 self.open_folder();
@@ -124,7 +134,53 @@ impl IDE {
         }
     }
 
+    fn custom_title_bar(&mut self, ctx: &egui::Context) {
+        let title_bar_height = 28.0;
+        egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
+            ui.set_height(title_bar_height);
+            ui.horizontal(|ui| {
+                ui.label(&self.title);
+                let title_bar_response = ui.allocate_rect(ui.min_rect(), egui::Sense::click_and_drag());
+
+                if title_bar_response.drag_started() {
+                    self.is_dragging = true;
+                    self.drag_start = ctx.pointer_hover_pos();
+                }
+
+                if self.is_dragging {
+                    if let (Some(drag_start), Some(current_pos)) = (self.drag_start, ctx.pointer_hover_pos()) {
+                        let delta = current_pos - drag_start;
+                        self.window_pos += delta;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(ctx.screen_rect().size()));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
+                        self.drag_start = Some(current_pos);
+                    }
+                }
+
+                if title_bar_response.drag_stopped() {
+                    self.is_dragging = false;
+                    self.drag_start = None;
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("❌").clicked() {
+                        process::exit(0);
+                    }
+                    if ui.button("🗖").clicked() {
+                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                    }
+                    if ui.button("🗕").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                });
+            });
+        });
+    }
+    
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        
+        self.custom_title_bar(ctx);  // Add this line
         self.handle_keyboard_shortcuts(ctx);
         self.console_panel.update();
         
