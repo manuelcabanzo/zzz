@@ -6,6 +6,7 @@ use image::GenericImageView;
 use zzz::core::ide::IDE;
 use std::path::PathBuf;
 use std::sync::Arc;
+use eframe::HardwareAcceleration;
 
 fn main() -> eframe::Result<()> {
     let icon_path = PathBuf::from("src/resources/blacksquare.png");
@@ -40,6 +41,9 @@ fn main() -> eframe::Result<()> {
     
     let native_options = eframe::NativeOptions {
         viewport,
+        vsync: true,                        // Enable VSync for smoother rendering
+        multisampling: 4,                   // Use 4x multisampling for better rendering quality
+        hardware_acceleration: HardwareAcceleration::Preferred, // Prefer GPU acceleration
         ..Default::default()
     };
     
