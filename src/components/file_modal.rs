@@ -27,11 +27,16 @@ impl FileModal {
     }
 
     pub fn show(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
-        let mut show = self.show;
+        if !self.show {
+            return;
+        }
+
+        let modal_size = egui::vec2(400.0, 500.0);
         egui::Window::new("File Browser")
-            .open(&mut show)
-            .resizable(true)
-            .default_width(300.0)
+            .fixed_size(modal_size)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.heading("Files");
                 ui.horizontal(|ui| {

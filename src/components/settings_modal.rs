@@ -28,7 +28,9 @@ impl SettingsModal {
             return;
         }
 
+        let modal_size = egui::vec2(400.0, 500.0);
         egui::Window::new("Settings")
+            .fixed_size(modal_size)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -50,13 +52,7 @@ impl SettingsModal {
                         SettingsTab::General => self.show_general_settings(ui),
                         SettingsTab::Editor => self.show_editor_settings(ui),
                     }
-                });
-
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        self.show = false;
-                    }
-                });
+                });    
             });
     }
 

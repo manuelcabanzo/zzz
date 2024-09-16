@@ -35,15 +35,10 @@ pub struct IDE {
     runtime: Arc<Runtime>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    window_pos: egui::Pos2,
-    is_dragging: bool,
-    drag_offset: egui::Vec2,
-    target_pos: egui::Pos2,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
@@ -68,10 +63,6 @@ impl IDE {
             runtime,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            window_pos: egui::Pos2::ZERO,
-            is_dragging: false,
-            drag_offset: egui::Vec2::ZERO,
-            target_pos: egui::Pos2::ZERO,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
@@ -134,65 +125,35 @@ impl IDE {
         }
     }
 
-    
-
-
-fn custom_title_bar(&mut self, ctx: &egui::Context) {
-    let title_bar_height = 28.0;
-    egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
+    fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
+        let title_bar_height = 28.0;
         ui.set_height(title_bar_height);
         ui.horizontal(|ui| {
             ui.label(&self.title);
-            let title_bar_rect = ui.max_rect();
-
-            let title_bar_response = ui.allocate_rect(title_bar_rect, egui::Sense::click_and_drag());
-
-            if title_bar_response.drag_started() {
-                self.is_dragging = true;
-                self.drag_offset = title_bar_response.interact_pointer_pos().unwrap() - self.window_pos;
-                self.target_pos = self.window_pos;
-            }
-
-            if self.is_dragging {
-                if let Some(current_pos) = title_bar_response.interact_pointer_pos() {
-                    self.target_pos = current_pos - self.drag_offset;
-                    let dt = 1.0 / 144.0;  // Fixed timestep for minimal smoothing
-                    let t = 1.0 - (-150.0_f64 * dt).exp();  // Use f64 for exponent calculation
-                    let t_f32 = t as f32;  // Cast t back to f32 for lerp
-                    self.window_pos = self.window_pos.lerp(self.target_pos, t_f32);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
-                }
-            }
-
-            if title_bar_response.drag_stopped() {
-                self.is_dragging = false;
-            }
-
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("❌").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 if ui.button("🗖").clicked() {
-                    let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                    let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                 }
                 if ui.button("🗕").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
             });
         });
-    });
-}
-
+    }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
+            self.custom_title_bar(ui);
+        });
         
-        self.custom_title_bar(ctx);  // Add this line
         self.handle_keyboard_shortcuts(ctx);
         self.console_panel.update();
         
         self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
-
 
         if self.show_emulator_panel {
             self.emulator_panel.show(ctx);
@@ -248,7 +209,5 @@ impl Drop for IDE {
 impl eframe::App for IDE {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.update(ctx, frame);
-        self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
-        self.settings_modal.show(ctx);
     }
 }
