@@ -31,62 +31,67 @@ impl FileModal {
             return;
         }
 
-        let modal_size = egui::vec2(400.0, 500.0);
+        let modal_size = egui::vec2(500.0, 500.0);
         egui::Window::new("File Browser")
             .fixed_size(modal_size)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.heading("Files");
-                ui.horizontal(|ui| {
-                    if ui.button("Open Folder").clicked() {
-                        self.open_project(log);
-                    }
-                    if self.file_system.is_some() {
-                        if ui.button("New File").clicked() {
-                            self.create_new_item(false, log);
+                ui.set_min_size(modal_size);
+                
+                ui.vertical(|ui| {
+                    ui.heading("Files");
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Open Folder").clicked() {
+                            self.open_project(log);
                         }
-                        if ui.button("New Folder").clicked() {
-                            self.create_new_item(true, log);
+                        if self.file_system.is_some() {
+                            if ui.button("New File").clicked() {
+                                self.create_new_item(false, log);
+                            }
+                            if ui.button("New Folder").clicked() {
+                                self.create_new_item(true, log);
+                            }
+                            if ui.button("Save").clicked() {
+                                self.save_current_file(code, current_file, log);
+                            }
+                            if ui.button("Delete").clicked() {
+                                self.delete_file(code, current_file, log);
+                            }
                         }
-                        if ui.button("Save").clicked() {
-                            self.save_current_file(code, current_file, log);
+                    });
+
+                    self.show_rename_dialog(ctx, code, current_file, log);
+                    ui.separator();
+
+                    if let (Some(fs), Some(project_path)) = (&self.file_system, &self.project_path) {
+                        let mut expanded_folders = self.expanded_folders.clone();
+                        let mut rename_dialog = self.rename_dialog.clone();
+                        let mut selected_folder = self.selected_folder.clone();
+                        let mut log_messages = Vec::new();
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            Self::render_folder_contents(
+                                ui, ctx, project_path, fs, &mut expanded_folders, code,
+                                current_file, &mut |msg: &str| log_messages.push(msg.to_string()),
+                                &mut rename_dialog, &mut selected_folder, 0,
+                            );
+                        });
+
+                        self.expanded_folders = expanded_folders;
+                        self.rename_dialog = rename_dialog;
+                        self.selected_folder = selected_folder;
+
+                        for msg in log_messages {
+                            log(&msg);
                         }
+                    } else {
+                        ui.label("No project opened. Click 'Open Folder' to start.");
                     }
                 });
-                
-                self.show_rename_dialog(ctx, code, current_file, log);
-
-                ui.separator();
-                if let (Some(fs), Some(project_path)) = (&self.file_system, &self.project_path) {
-                    let mut expanded_folders = self.expanded_folders.clone();
-                    let mut rename_dialog = self.rename_dialog.clone();
-                    let mut selected_folder = self.selected_folder.clone();
-                    let mut log_messages = Vec::new();
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        Self::render_folder_contents(
-                            ui,
-                            ctx,
-                            project_path,
-                            fs,
-                            &mut expanded_folders,
-                            code,
-                            current_file,
-                            &mut |msg: &str| log_messages.push(msg.to_string()),
-                            &mut rename_dialog,
-                            &mut selected_folder,
-                        );
-                    });
-                    self.expanded_folders = expanded_folders;
-                    self.rename_dialog = rename_dialog;
-                    self.selected_folder = selected_folder;
-                    for msg in log_messages {
-                        log(&msg);
-                    }
-                } else {
-                    ui.label("No project opened. Click 'Open Folder' to start.");
-                }
             });
     }
 
@@ -119,6 +124,7 @@ impl FileModal {
                             *old_name = new_name.clone();
                         }
                     });
+
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             canceled = true;
@@ -141,7 +147,7 @@ impl FileModal {
 
         if let Some((old_path, new_path, old_name, new_name)) = action {
             log(&format!("Attempting to create/rename: {} to {}", old_path.display(), new_path.display()));
-            
+
             if let Some(fs) = &self.file_system {
                 if old_path.exists() {
                     match fs.rename_file(&old_path, &new_path) {
@@ -173,13 +179,13 @@ impl FileModal {
                         }
                     }
                 }
-                
+
                 if fs.path_exists(&new_path) {
                     log(&format!("Confirmed: {} exists", new_path.display()));
                 } else {
                     log(&format!("Warning: {} does not exist after creation attempt", new_path.display()));
                 }
-                
+
                 if let Some(parent) = new_path.parent() {
                     self.expanded_folders.insert(parent.to_path_buf());
                 }
@@ -189,9 +195,10 @@ impl FileModal {
             self.rename_dialog = None;
         }
     }
-    
+
     fn create_new_item(&mut self, is_folder: bool, log: &mut dyn FnMut(&str)) {
         log(&format!("Creating new {}", if is_folder { "folder" } else { "file" }));
+
         if let Some(fs) = &self.file_system {
             let parent_folder = if let Some(selected_folder) = &self.selected_folder {
                 selected_folder.clone()
@@ -211,9 +218,9 @@ impl FileModal {
 
             let new_path = parent_folder.join(&default_name);
             self.rename_dialog = Some((new_path.clone(), default_name.clone()));
+
             log(&format!("Rename dialog set for new {} at path: {}", 
-                if is_folder { "folder" } else { "file" },
-                new_path.display()
+                if is_folder { "folder" } else { "file" }, new_path.display()
             ));
         } else {
             log("Error: File system not initialized");
@@ -245,88 +252,70 @@ impl FileModal {
         log: &mut dyn FnMut(&str),
         rename_dialog: &mut Option<(PathBuf, String)>,
         selected_folder: &mut Option<PathBuf>,
+        indent_level: usize,
     ) {
         if let Ok(entries) = fs.list_directory(folder) {
             for entry in entries {
                 let path = folder.join(&entry.name);
                 let is_dir = entry.is_dir;
                 let is_expanded = expanded_folders.contains(&path);
-                let id = ui.make_persistent_id(&path);
-                let text = if is_dir {
-                    format!("📁 {}", entry.name)
-                } else {
-                    format!("📄 {}", entry.name)
-                };
-                let is_selected = selected_folder.as_ref().map_or(false, |sf| sf == &path);
+                let _id = ui.make_persistent_id(&path);
 
                 ui.horizontal(|ui| {
-                    let response = if is_dir {
-                        let header = egui::CollapsingHeader::new(text)
-                            .id_source(id)
-                            .default_open(is_expanded);
+                    ui.add_space(indent_level as f32 * 20.0);
 
-                        let state = header.show(ui, |ui| {
-                            if is_expanded {
-                                Self::render_folder_contents(
-                                    ui,
-                                    ctx,
-                                    &path,
-                                    fs,
-                                    expanded_folders,
-                                    code,
-                                    current_file,
-                                    log,
-                                    rename_dialog,
-                                    selected_folder,
-                                );
-                            }
-                        });
-
-                        state.header_response.clone()
+                    let text = if is_dir {
+                        format!("{}", entry.name)
                     } else {
-                        ui.label(text)
+                        format!(" {}", entry.name)
                     };
 
-                    if is_selected {
-                        response.clone().highlight();
+                    let label = if is_dir {
+                        egui::RichText::new(text).italics()
+                    } else {
+                        egui::RichText::new(text)
+                    };
+
+                    let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
 
-                    if response.clicked() {
-                        if is_dir {
-                            if is_expanded {
-                                expanded_folders.remove(&path);
-                            } else {
-                                expanded_folders.insert(path.clone());
-                            }
-                            *selected_folder = Some(path.clone());
-                        } else {
-                            match fs.open_file(&path) {
-                                Ok(content) => {
-                                    *code = content;
-                                    *current_file = Some(path.to_str().unwrap().to_string());
-                                    log(&format!("Opened file: {}", path.display()));
-                                }
-                                Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
-                            }
-                        }
-                    }
-
-                    if ui.button("🖊").on_hover_text("Rename").clicked() {
-                        *rename_dialog = Some((path.clone(), entry.name.clone()));
-                    }
-                    if ui.button("🗑").on_hover_text("Delete").clicked() {
-                        if let Err(e) = fs.delete_file(&path) {
-                            log(&format!("Error deleting {}: {}", path.display(), e));
-                        } else {
-                            log(&format!("Deleted {}: {}", if is_dir { "folder" } else { "file" }, path.display()));
-                            if !is_dir && current_file.as_ref().map(|f| f == path.to_str().unwrap()).unwrap_or(false) {
-                                *current_file = None;
-                                *code = String::new();
-                            }
+                    if is_dir && response.clicked() {
+                        if is_expanded {
                             expanded_folders.remove(&path);
+                        } else {
+                            expanded_folders.insert(path.clone());
                         }
+                        *selected_folder = Some(path.clone());
+                    } else if !is_dir && response.clicked() {
+                        match fs.open_file(&path) {
+                            Ok(content) => {
+                                *code = content;
+                                *current_file = Some(path.to_str().unwrap().to_string());
+                                log(&format!("Opened file: {}", path.display()));
+                            }
+                            Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
+                        }
+                    }
+
+                    if response.hovered() {
+                        let hover_text = if is_dir {
+                            "Click to expand/collapse"
+                        } else {
+                            "Click to open file"
+                        };
+                        response.on_hover_text(hover_text);
                     }
                 });
+
+                if is_dir && is_expanded {
+                    Self::render_folder_contents(
+                        ui, ctx, &path, fs, expanded_folders, code,
+                        current_file, log, rename_dialog, selected_folder, indent_level + 1,
+                    );
+                }
             }
         } else {
             log(&format!("Error reading directory: {}", folder.display()));

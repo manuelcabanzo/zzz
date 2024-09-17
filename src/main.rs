@@ -44,6 +44,7 @@ fn main() -> eframe::Result<()> {
         vsync: true,                        // Enable VSync for smoother rendering
         multisampling: 4,                   // Use 4x multisampling for better rendering quality
         hardware_acceleration: HardwareAcceleration::Preferred, // Prefer GPU acceleration
+        centered: true,
         ..Default::default()
     };
     
