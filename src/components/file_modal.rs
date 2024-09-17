@@ -12,6 +12,8 @@ pub struct FileModal {
     pub expanded_folders: HashSet<PathBuf>,
     pub rename_dialog: Option<(PathBuf, String)>,
     pub selected_folder: Option<PathBuf>,
+    show_delete_confirmation: Option<PathBuf>,
+    selected_item: Option<PathBuf>,  // New field to track the selected item
 }
 
 impl FileModal {
@@ -23,6 +25,8 @@ impl FileModal {
             expanded_folders: HashSet::new(),
             rename_dialog: None,
             selected_folder: None,
+            show_delete_confirmation: None,
+            selected_item: None,  // Initialize the new field
         }
     }
 
@@ -58,10 +62,44 @@ impl FileModal {
                                 self.save_current_file(code, current_file, log);
                             }
                             if ui.button("Delete").clicked() {
-                                self.delete_file(code, current_file, log);
+                                if let Some(selected_path) = &self.selected_item {
+                                    // Show confirmation dialog for the selected item
+                                    self.show_delete_confirmation = Some(selected_path.clone());
+                                } else {
+                                    log("No file or folder selected for deletion.");
+                                }
                             }
                         }
                     });
+                    
+                    if let Some(path_to_delete) = self.show_delete_confirmation.clone() {
+                        egui::Window::new("Confirm Deletion")
+                            .collapsible(false)
+                            .resizable(false)
+                            .show(ctx, |ui| {
+                                ui.label(format!("Are you sure you want to delete '{}'? This action cannot be undone.", path_to_delete.display()));
+
+                                ui.horizontal(|ui| {
+                                    if ui.button("Yes").clicked() {
+                                        // Delete the file or folder
+                                        if let Some(file_system) = &self.file_system {
+                                            match file_system.delete_file(&path_to_delete) {
+                                                Ok(_) => {
+                                                    log(&format!("Deleted: {}", path_to_delete.display()));
+                                                    self.selected_item = None;  // Clear the selection after deletion
+                                                },
+                                                Err(e) => log(&format!("Failed to delete {}: {:?}", path_to_delete.display(), e)),
+                                            }
+                                        }
+                                        self.show_delete_confirmation = None; // Close the confirmation window
+                                    }
+
+                                    if ui.button("No").clicked() {
+                                        self.show_delete_confirmation = None; // Close without deleting
+                                    }
+                                });
+                            });
+                    }
 
                     self.show_rename_dialog(ctx, code, current_file, log);
                     ui.separator();
@@ -78,6 +116,7 @@ impl FileModal {
                                 ui, ctx, project_path, fs, &mut expanded_folders, code,
                                 current_file, &mut |msg: &str| log_messages.push(msg.to_string()),
                                 &mut rename_dialog, &mut selected_folder, 0,
+                                &mut self.selected_item,  // Pass the selected_item
                             );
                         });
 
@@ -93,6 +132,12 @@ impl FileModal {
                     }
                 });
             });
+    }
+
+    pub fn selected_file_or_folder(&self) -> Option<PathBuf> {
+        // Logic to return the currently selected file or folder
+        // For example, if using a variable to track the selected item:
+        self.project_path.clone()
     }
 
     fn open_project(&mut self, log: &mut dyn FnMut(&str)) {
@@ -253,6 +298,7 @@ impl FileModal {
         rename_dialog: &mut Option<(PathBuf, String)>,
         selected_folder: &mut Option<PathBuf>,
         indent_level: usize,
+        selected_item: &mut Option<PathBuf>,
     ) {
         if let Ok(entries) = fs.list_directory(folder) {
             for entry in entries {
@@ -270,10 +316,17 @@ impl FileModal {
                         format!(" {}", entry.name)
                     };
 
-                    let label = if is_dir {
-                        egui::RichText::new(text).italics()
+                    let is_selected = selected_item.as_ref() == Some(&path);
+                    let text_color = if is_selected {
+                        egui::Color32::from_rgb(100, 100, 255)
                     } else {
-                        egui::RichText::new(text)
+                        ui.style().visuals.text_color()
+                    };
+
+                    let label = if is_dir {
+                        egui::RichText::new(text).italics().color(text_color)
+                    } else {
+                        egui::RichText::new(text).color(text_color)
                     };
 
                     let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
@@ -282,29 +335,32 @@ impl FileModal {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
 
-                    if is_dir && response.clicked() {
-                        if is_expanded {
-                            expanded_folders.remove(&path);
-                        } else {
-                            expanded_folders.insert(path.clone());
-                        }
-                        *selected_folder = Some(path.clone());
-                    } else if !is_dir && response.clicked() {
-                        match fs.open_file(&path) {
-                            Ok(content) => {
-                                *code = content;
-                                *current_file = Some(path.to_str().unwrap().to_string());
-                                log(&format!("Opened file: {}", path.display()));
+                    if response.clicked() {
+                        *selected_item = Some(path.clone());  // Update the selected item
+                        if is_dir {
+                            if is_expanded {
+                                expanded_folders.remove(&path);
+                            } else {
+                                expanded_folders.insert(path.clone());
                             }
-                            Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
+                            *selected_folder = Some(path.clone());
+                        } else {
+                            match fs.open_file(&path) {
+                                Ok(content) => {
+                                    *code = content;
+                                    *current_file = Some(path.to_str().unwrap().to_string());
+                                    log(&format!("Opened file: {}", path.display()));
+                                }
+                                Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
+                            }
                         }
                     }
 
                     if response.hovered() {
                         let hover_text = if is_dir {
-                            "Click to expand/collapse"
+                            "Click to expand/collapse and select"
                         } else {
-                            "Click to open file"
+                            "Click to open file and select"
                         };
                         response.on_hover_text(hover_text);
                     }
@@ -314,6 +370,7 @@ impl FileModal {
                     Self::render_folder_contents(
                         ui, ctx, &path, fs, expanded_folders, code,
                         current_file, log, rename_dialog, selected_folder, indent_level + 1,
+                        selected_item,
                     );
                 }
             }
