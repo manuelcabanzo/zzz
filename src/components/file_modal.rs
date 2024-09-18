@@ -61,12 +61,18 @@ impl FileModal {
                         if ui.button("Open Folder").clicked() {
                             self.open_project(log);
                         }
-                        if self.file_system.is_some() {
+                        
+                        let project_path = self.project_path.clone();
+                        if project_path.is_some() {
                             if ui.button("New File").clicked() {
-                                self.start_create_item(false);
+                                if let Some(path) = &project_path {
+                                    self.start_create_item(false, path);
+                                }
                             }
                             if ui.button("New Folder").clicked() {
-                                self.start_create_item(true);
+                                if let Some(path) = &project_path {
+                                    self.start_create_item(true, path);
+                                }
                             }
                             if ui.button("Save").clicked() {
                                 self.save_current_file(code, current_file, log);
@@ -94,7 +100,6 @@ impl FileModal {
 
         self.handle_context_menu(ctx, log);
     }
-
     fn render_folder_contents(
         &mut self,
         ui: &mut egui::Ui,
@@ -197,7 +202,7 @@ impl FileModal {
                     }
                 });
 
-                if is_dir && is_expanded {
+                if is_dir && (is_expanded || self.creating_item.as_ref().map_or(false, |(parent, _, _)| parent == &path)) {
                     self.render_folder_contents(
                         ui, ctx, &path, fs, code,
                         current_file, log, indent_level + 1,
@@ -219,7 +224,7 @@ impl FileModal {
                         response.request_focus();
                         self.new_item_focus = false;
                     }
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         item_created = true;
                     }
                 });
@@ -231,6 +236,7 @@ impl FileModal {
             }
         }
     }
+    
     
     fn handle_context_menu(&mut self, ctx: &egui::Context, log: &mut dyn FnMut(&str)) {
         if let Some(menu_state) = &self.context_menu {
@@ -256,11 +262,11 @@ impl FileModal {
                             }
                             if is_dir {
                                 if ui.button("New File").clicked() {
-                                    self.start_create_item(false);
+                                    self.start_create_item(false, &path);
                                     self.context_menu = None;
                                 }
                                 if ui.button("New Folder").clicked() {
-                                    self.start_create_item(true);
+                                    self.start_create_item(true, &path);
                                     self.context_menu = None;
                                 }
                             }
@@ -296,12 +302,12 @@ impl FileModal {
         }
     }
 
-    fn start_create_item(&mut self, is_folder: bool) {
-        let parent = self.selected_folder.clone().unwrap_or_else(|| self.project_path.clone().unwrap());
+    fn start_create_item(&mut self, is_folder: bool, parent: &Path) {
         let name = if is_folder { "New Folder".to_string() } else { "New File.txt".to_string() };
-        self.creating_item = Some((parent, name, is_folder));
+        self.creating_item = Some((parent.to_path_buf(), name, is_folder));
+        self.expanded_folders.insert(parent.to_path_buf());
         self.new_item_focus = true;
-    }
+    }   
 
     fn finish_create_item(&mut self, parent: &Path, name: &str, is_folder: bool, log: &mut dyn FnMut(&str)) {
         if let Some(fs) = &self.file_system {
