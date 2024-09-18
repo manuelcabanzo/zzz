@@ -13,7 +13,8 @@ pub struct FileModal {
     pub rename_dialog: Option<(PathBuf, String)>,
     pub selected_folder: Option<PathBuf>,
     show_delete_confirmation: Option<PathBuf>,
-    selected_item: Option<PathBuf>,  // New field to track the selected item
+    pub show_rename_dialog: bool,
+    selected_item: Option<PathBuf>,
 }
 
 impl FileModal {
@@ -26,6 +27,7 @@ impl FileModal {
             rename_dialog: None,
             selected_folder: None,
             show_delete_confirmation: None,
+            show_rename_dialog: false,
             selected_item: None,  // Initialize the new field
         }
     }
@@ -69,11 +71,19 @@ impl FileModal {
                                     log("No file or folder selected for deletion.");
                                 }
                             }
+                            if ui.button("Rename").clicked() {
+                                if let Some(selected_path) = &self.selected_item {
+                                    self.rename_dialog = Some((selected_path.clone(), selected_path.file_name().unwrap().to_str().unwrap().to_string()));
+                                    self.show_rename_dialog = true;
+                                } else {
+                                    log("No file or folder selected for renaming.");
+                                }
+                            }                        
                         }
                     });
                     
                     if let Some(path_to_delete) = self.show_delete_confirmation.clone() {
-                        egui::Window::new("Confirm Deletion")
+                        egui::Window::new("Confirm Deleton")
                             .collapsible(false)
                             .resizable(false)
                             .show(ctx, |ui| {
@@ -134,10 +144,9 @@ impl FileModal {
             });
     }
 
+        
     pub fn selected_file_or_folder(&self) -> Option<PathBuf> {
-        // Logic to return the currently selected file or folder
-        // For example, if using a variable to track the selected item:
-        self.project_path.clone()
+        self.selected_item.clone()  // Return the selected item instead of project_path
     }
 
     fn open_project(&mut self, log: &mut dyn FnMut(&str)) {
@@ -151,6 +160,10 @@ impl FileModal {
     }
 
     fn show_rename_dialog(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
+        if !self.show_rename_dialog {
+            return;
+        }
+
         let mut action = None;
 
         if let Some((path, old_name)) = &mut self.rename_dialog {
@@ -187,6 +200,7 @@ impl FileModal {
             } else if canceled {
                 log("Rename dialog canceled");
                 self.rename_dialog = None;
+                self.show_rename_dialog = false;
             }
         }
 
