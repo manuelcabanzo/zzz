@@ -1,9 +1,20 @@
 use eframe::egui;
 use std::path::{PathBuf, Path};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::collections::HashSet;
 use rfd::FileDialog;
 use crate::core::file_system::FileSystem;
+use crate::core::lsp_client::LspClient;
+use lsp_types::{
+    InitializeParams, 
+    ClientCapabilities, 
+    Url, 
+    DidChangeTextDocumentParams, 
+    VersionedTextDocumentIdentifier, 
+    TextDocumentContentChangeEvent
+};
+use tokio::runtime::Runtime;
 
 pub struct FileModal {
     pub show: bool,
@@ -13,9 +24,11 @@ pub struct FileModal {
     pub selected_folder: Option<PathBuf>,
     pub selected_item: Option<PathBuf>,
     editing_item: Option<(PathBuf, String)>,
-    creating_item: Option<(PathBuf, String, bool)>, // (parent_path, name, is_folder)
+    creating_item: Option<(PathBuf, String, bool)>,
     context_menu: Option<ContextMenuState>,
     new_item_focus: bool,
+    lsp_client: Option<Arc<LspClient>>,
+    runtime: Arc<Runtime>,
 }
 
 struct ContextMenuState {
@@ -25,7 +38,7 @@ struct ContextMenuState {
 }
 
 impl FileModal {
-    pub fn new() -> Self {
+    pub fn new(runtime: Arc<Runtime>) -> Self {
         Self {
             show: false,
             file_system: None,
@@ -37,8 +50,11 @@ impl FileModal {
             creating_item: None,
             context_menu: None,
             new_item_focus: false,
+            lsp_client: None,
+            runtime,
         }
     }
+
 
     pub fn show(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
         if !self.show {
@@ -59,7 +75,7 @@ impl FileModal {
 
                     ui.horizontal(|ui| {
                         if ui.button("Open Folder").clicked() {
-                            self.open_project(log);
+                            self.open_folder(log);
                         }
                         if self.file_system.is_some() {
                             if ui.button("New File").clicked() {
@@ -336,13 +352,57 @@ impl FileModal {
         }
     }
 
-    fn open_project(&mut self, log: &mut dyn FnMut(&str)) {
-        if let Some(path) = FileDialog::new().pick_folder() {
-            self.project_path = Some(path.clone());
-            self.file_system = Some(Rc::new(FileSystem::new(path.to_str().unwrap())));
+    
+    pub fn open_folder(&mut self, log: &mut dyn FnMut(&str)) {
+        if let Some(folder_path) = FileDialog::new().pick_folder() {
+            self.project_path = Some(folder_path.clone());
+            let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
+            self.file_system = Some(fs.clone());
             self.expanded_folders.clear();
-            self.expanded_folders.insert(path.clone());
-            log(&format!("Opened project: {}", path.display()));
+            self.expanded_folders.insert(folder_path.clone());
+            log(&format!("Opened project: {}", folder_path.display()));
+
+            // Initialize LSP client
+            self.runtime.block_on(async {
+                let lsp_client = Arc::new(LspClient::new());
+
+                let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
+                let init_params = InitializeParams {
+                    root_uri: Some(root_uri),
+                    capabilities: ClientCapabilities::default(),
+                    ..InitializeParams::default()
+                };
+                match lsp_client.initialize(init_params).await {
+                    Ok(_) => {
+                        self.lsp_client = Some(lsp_client);
+                        log("LSP client initialized successfully");
+                    },
+                    Err(e) => {
+                        log(&format!("Failed to initialize LSP client: {:?}", e));
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn notify_file_change(&self, file_path: &str, content: &str) {
+        if let Some(lsp_client) = &self.lsp_client {
+            let uri = Url::from_file_path(file_path).expect("Failed to create URL from path");
+            let lsp_client_clone = Arc::clone(lsp_client);
+            let content = content.to_string();
+            self.runtime.spawn(async move {
+                lsp_client_clone.did_change(DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: 0, // You might want to implement proper versioning
+                    },
+                    content_changes: vec![TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: content,
+                    }],
+                }).await;
+            });
         }
     }
 

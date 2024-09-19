@@ -1,8 +1,4 @@
 use eframe::egui;
-use std::path::PathBuf;
-use std::rc::Rc;
-use crate::core::file_system::FileSystem;
-use rfd::FileDialog;
 use crate::components::{
     file_modal::FileModal,
     code_editor::CodeEditor,
@@ -10,14 +6,7 @@ use crate::components::{
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
 };
-use crate::core::lsp_client::LspClient;
-use lsp_types::{
-    InitializeParams, ClientCapabilities, Url,
-    DidChangeTextDocumentParams, VersionedTextDocumentIdentifier,
-    TextDocumentContentChangeEvent,
-};
 use std::sync::Arc;
-use crate::core::lsp_server;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 
@@ -27,12 +16,8 @@ pub struct IDE {
     console_panel: ConsolePanel,
     emulator_panel: EmulatorPanel,
     settings_modal: SettingsModal,
-    file_system: Option<Rc<FileSystem>>,
-    project_path: Option<PathBuf>,
     show_console_panel: bool,
     show_emulator_panel: bool,
-    lsp_client: Option<Arc<LspClient>>,
-    runtime: Arc<Runtime>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
 }
@@ -45,22 +30,18 @@ impl IDE {
         let runtime_clone = Arc::clone(&runtime);
         std::thread::spawn(move || {
             runtime_clone.block_on(async {
-                lsp_server::start_lsp_server().await;
+                crate::core::lsp_server::start_lsp_server().await;
             });
         });
 
         let ide = Self {
-            file_modal: FileModal::new(),
+            file_modal: FileModal::new(Arc::clone(&runtime)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
-            file_system: None,
-            project_path: None,
             show_console_panel: false,
             show_emulator_panel: false,
-            lsp_client: None,
-            runtime,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
         };
@@ -85,45 +66,12 @@ impl IDE {
                 self.settings_modal.show = !self.settings_modal.show;
             }
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
-                self.open_folder();
+                self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
         });
     }
 
-    fn open_folder(&mut self) {
-        if let Some(folder_path) = FileDialog::new().pick_folder() {
-            self.project_path = Some(folder_path.clone());
-            let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
-            self.file_system = Some(fs.clone());
-            self.file_modal.file_system = Some(fs);
-            self.file_modal.project_path = Some(folder_path.clone());
-            self.file_modal.expanded_folders.clear();
-            self.file_modal.expanded_folders.insert(folder_path.clone());
-            self.console_panel.log(&format!("Opened project: {}", folder_path.display()));
-
-            // Use the existing runtime to initialize the LSP client
-            self.runtime.block_on(async {
-                let lsp_client = Arc::new(LspClient::new());
-
-                let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
-                let init_params = InitializeParams {
-                    root_uri: Some(root_uri),
-                    capabilities: ClientCapabilities::default(),
-                    ..InitializeParams::default()
-                };
-                match lsp_client.initialize(init_params).await {
-                    Ok(_) => {
-                        self.lsp_client = Some(lsp_client.clone());
-                        self.code_editor.set_lsp_client(lsp_client);
-                        self.console_panel.log("LSP client initialized successfully");
-                    },
-                    Err(e) => {
-                        self.console_panel.log(&format!("Failed to initialize LSP client: {:?}", e));
-                    }
-                }
-            });
-        }
-    }
+ 
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
@@ -168,28 +116,11 @@ impl IDE {
             };    
             self.code_editor.show(ui, available_height);
 
-            if let Some(lsp_client) = &self.lsp_client {
-                if let Some(current_file) = &self.code_editor.current_file {
-                    let uri = Url::from_file_path(current_file).expect("Failed to create URL from path");
-                    let lsp_client_clone = Arc::clone(lsp_client);
-                    let code = self.code_editor.code.clone();
-                    self.runtime.spawn(async move {
-                        lsp_client_clone.did_change(DidChangeTextDocumentParams {
-                            text_document: VersionedTextDocumentIdentifier {
-                                uri: uri.clone(),
-                                version: 0, // You might want to implement proper versioning
-                            },
-                            content_changes: vec![TextDocumentContentChangeEvent {
-                                range: None,
-                                range_length: None,
-                                text: code,
-                            }],
-                        }).await;
-                    });
-                }
-            }        
+            if let Some(current_file) = &self.code_editor.current_file {
+                let code = self.code_editor.code.clone();
+                self.file_modal.notify_file_change(current_file, &code);
+            }      
         });
-
         if self.show_console_panel {
             self.console_panel.show(ctx);
         }
