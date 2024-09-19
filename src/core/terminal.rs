@@ -4,25 +4,32 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use eframe::egui;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 pub struct Terminal {
     input: String,
     output: VecDeque<String>,
     input_tx: Sender<String>,
     output_rx: Receiver<String>,
+    working_directory: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl Terminal {
     pub fn new() -> Self {
         let (input_tx, input_rx) = channel::<String>();
         let (output_tx, output_rx) = channel::<String>();
+        let working_directory = Arc::new(Mutex::new(None));
 
+        let working_directory_clone = Arc::clone(&working_directory);
         thread::spawn(move || {
             loop {
                 if let Ok(input) = input_rx.recv() {
                     let output_tx_clone = output_tx.clone();
+                    let working_dir = working_directory_clone.clone();
                     thread::spawn(move || {
-                        execute_command(&input, output_tx_clone);
+                        let dir = working_dir.lock().unwrap().clone();
+                        execute_command(&input, output_tx_clone, dir.as_ref());
                     });
                 }
             }
@@ -33,7 +40,13 @@ impl Terminal {
             output: VecDeque::new(),
             input_tx,
             output_rx,
+            working_directory,
         }
+    }
+
+    pub fn set_working_directory(&self, path: PathBuf) {
+        let mut working_dir = self.working_directory.lock().unwrap();
+        *working_dir = Some(path);
     }
 
     pub fn update(&mut self) {
@@ -75,23 +88,36 @@ impl Terminal {
     pub fn clear_output(&mut self) {
         self.output.clear();
     }
+
+    pub fn execute(&self, command: String) {
+        let working_dir = self.working_directory.clone();
+        let input_tx = self.input_tx.clone();
+        thread::spawn(move || {
+            let dir = working_dir.lock().unwrap().clone();
+            execute_command(&command, input_tx, dir.as_ref());
+        });
+    }
 }
 
-fn execute_command(command: &str, output_tx: Sender<String>) {
-    let process = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(&["/C", command])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+fn execute_command(command: &str, output_tx: Sender<String>, working_dir: Option<&PathBuf>) {
+    let mut process_command = if cfg!(target_os = "windows") {
+        let mut cmd = Command::new("cmd");
+        cmd.args(&["/C", command]);
+        cmd
     } else {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("stdbuf -oL -eL {}", command)) // Use stdbuf to disable buffering
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
     };
+
+    if let Some(dir) = working_dir {
+        process_command.current_dir(dir);
+    }
+
+    let process = process_command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
 
     if let Ok(mut process) = process {
         if let Some(stdout) = process.stdout.take() {

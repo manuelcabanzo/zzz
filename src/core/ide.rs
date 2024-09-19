@@ -6,9 +6,10 @@ use crate::components::{
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
 };
-use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
+use std::sync::{Arc, Mutex};
+use crate::core::terminal::Terminal;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -24,6 +25,8 @@ pub struct IDE {
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+
+        let terminal = Arc::new(Mutex::new(Terminal::new()));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
@@ -35,9 +38,9 @@ impl IDE {
         });
 
         let ide = Self {
-            file_modal: FileModal::new(Arc::clone(&runtime)),
+            file_modal: FileModal::new(Arc::clone(&runtime), Arc::clone(&terminal)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
-            console_panel: ConsolePanel::new(),
+            console_panel: ConsolePanel::new(Arc::clone(&terminal)),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,

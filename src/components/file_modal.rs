@@ -1,9 +1,10 @@
 use eframe::egui;
 use std::path::{PathBuf, Path};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::collections::HashSet;
 use rfd::FileDialog;
+use std::sync::{Arc, Mutex};
+use crate::core::terminal::Terminal;
 use crate::core::file_system::FileSystem;
 use crate::core::lsp_client::LspClient;
 use lsp_types::{
@@ -29,6 +30,7 @@ pub struct FileModal {
     new_item_focus: bool,
     lsp_client: Option<Arc<LspClient>>,
     runtime: Arc<Runtime>,
+    terminal: Arc<Mutex<Terminal>>,
 }
 
 struct ContextMenuState {
@@ -38,7 +40,7 @@ struct ContextMenuState {
 }
 
 impl FileModal {
-    pub fn new(runtime: Arc<Runtime>) -> Self {
+    pub fn new(runtime: Arc<Runtime>, terminal: Arc<Mutex<Terminal>>) -> Self {
         Self {
             show: false,
             file_system: None,
@@ -52,6 +54,7 @@ impl FileModal {
             new_item_focus: false,
             lsp_client: None,
             runtime,
+            terminal,
         }
     }
 
@@ -368,6 +371,11 @@ impl FileModal {
             self.expanded_folders.insert(folder_path.clone());
             log(&format!("Opened project: {}", folder_path.display()));
 
+            // Set working directory for the terminal
+            if let Ok(terminal) = self.terminal.lock() {
+                terminal.set_working_directory(folder_path.clone());
+            }
+
             // Initialize LSP client
             self.runtime.block_on(async {
                 let lsp_client = Arc::new(LspClient::new());
@@ -388,6 +396,7 @@ impl FileModal {
                     }
                 }
             });
+
         }
     }
 
