@@ -364,6 +364,11 @@ impl FileModal {
     
     pub fn open_folder(&mut self, log: &mut dyn FnMut(&str)) {
         if let Some(folder_path) = FileDialog::new().pick_folder() {
+            if self.project_path.as_ref() == Some(&folder_path) {
+                log("Project already open");
+                return;
+            }
+
             self.project_path = Some(folder_path.clone());
             let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
             self.file_system = Some(fs.clone());

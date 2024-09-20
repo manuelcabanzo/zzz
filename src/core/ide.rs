@@ -25,8 +25,8 @@ pub struct IDE {
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-
-        let terminal = Arc::new(Mutex::new(Terminal::new()));
+        let (terminal, output_receiver) = Terminal::new();
+        let terminal = Arc::new(Mutex::new(terminal));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
@@ -40,7 +40,7 @@ impl IDE {
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime), Arc::clone(&terminal)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
-            console_panel: ConsolePanel::new(Arc::clone(&terminal)),
+            console_panel: ConsolePanel::new(Arc::clone(&terminal), output_receiver),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,

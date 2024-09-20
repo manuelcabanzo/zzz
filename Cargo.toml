@@ -17,6 +17,7 @@ tokio = { version = "1.40.0", features = ["full"] }
 tower-lsp = "0.20.0"
 lsp-types = "0.94.0"
 image = "0.25.2"
+crossbeam-channel = "0.5.13"
 
 [lib]
 name = "zzz"
