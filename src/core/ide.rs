@@ -10,6 +10,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use std::sync::{Arc, Mutex};
 use crate::core::terminal::Terminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct IDE {
     file_modal: FileModal,
@@ -21,6 +22,8 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
+    lsp_initialized: AtomicBool,
+    runtime: Arc<Runtime>, 
 }
 
 impl IDE {
@@ -29,13 +32,6 @@ impl IDE {
         let terminal = Arc::new(Mutex::new(terminal));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-
-        let runtime_clone = Arc::clone(&runtime);
-        std::thread::spawn(move || {
-            runtime_clone.block_on(async {
-                crate::core::lsp_server::start_lsp_server().await;
-            });
-        });
 
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime), Arc::clone(&terminal)),
@@ -47,13 +43,14 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
+            lsp_initialized: AtomicBool::new(false),
+            runtime, // Add this line
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
 
         ide
     }
-
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Num1) && i.modifiers.ctrl {
@@ -74,7 +71,16 @@ impl IDE {
         });
     }
 
- 
+    fn initialize_lsp(&self) {
+        if self.lsp_initialized.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let runtime_clone = Arc::clone(&self.runtime);
+            std::thread::spawn(move || {
+                runtime_clone.block_on(async {
+                    crate::core::lsp_server::start_lsp_server().await;
+                });
+            });
+        }
+    }
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
@@ -101,6 +107,7 @@ impl IDE {
             self.custom_title_bar(ui);
         });
         
+        self.initialize_lsp();
         self.handle_keyboard_shortcuts(ctx);
         self.console_panel.update();
         
@@ -111,21 +118,26 @@ impl IDE {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {    
-            let fixed_editor_height = 730.0;    
-            let available_height = if self.show_console_panel {         
-                (ui.available_height() - 280.0).min(fixed_editor_height)    
-            } else {        
-                fixed_editor_height    
-            };    
-            self.code_editor.show(ui, available_height);
+            let available_height = ui.available_height() - 30.0;
+            let console_height = 300.0; // Fixed console height
+            let editor_height = if self.show_console_panel {
+                available_height - console_height
+            } else {
+                available_height - 20.0
+            };
+            
+            self.code_editor.show(ui, editor_height);
 
             if let Some(current_file) = &self.code_editor.current_file {
                 let code = self.code_editor.code.clone();
                 self.file_modal.notify_file_change(current_file, &code);
             }      
         });
+
         if self.show_console_panel {
-            self.console_panel.show(ctx);
+            egui::TopBottomPanel::bottom("console_panel").resizable(false).exact_height(280.0).show(ctx, |ui| {
+                self.console_panel.show(ui);
+            });
         }
 
         self.settings_modal.show(ctx);

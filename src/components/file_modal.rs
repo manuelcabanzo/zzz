@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::collections::HashSet;
 use rfd::FileDialog;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::terminal::Terminal;
 use crate::core::file_system::FileSystem;
 use crate::core::lsp_client::LspClient;
@@ -31,6 +32,7 @@ pub struct FileModal {
     lsp_client: Option<Arc<LspClient>>,
     runtime: Arc<Runtime>,
     terminal: Arc<Mutex<Terminal>>,
+    is_initializing: AtomicBool,
 }
 
 struct ContextMenuState {
@@ -55,6 +57,7 @@ impl FileModal {
             lsp_client: None,
             runtime,
             terminal,
+            is_initializing: AtomicBool::new(false),
         }
     }
 
@@ -360,48 +363,55 @@ impl FileModal {
             }
         }
     }
-
     
     pub fn open_folder(&mut self, log: &mut dyn FnMut(&str)) {
-        if let Some(folder_path) = FileDialog::new().pick_folder() {
-            if self.project_path.as_ref() == Some(&folder_path) {
-                log("Project already open");
-                return;
-            }
-
-            self.project_path = Some(folder_path.clone());
-            let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
-            self.file_system = Some(fs.clone());
-            self.expanded_folders.clear();
-            self.expanded_folders.insert(folder_path.clone());
-            log(&format!("Opened project: {}", folder_path.display()));
-
-            // Set working directory for the terminal
-            if let Ok(terminal) = self.terminal.lock() {
-                terminal.set_working_directory(folder_path.clone());
-            }
-
-            // Initialize LSP client
-            self.runtime.block_on(async {
-                let lsp_client = Arc::new(LspClient::new());
-
-                let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
-                let init_params = InitializeParams {
-                    root_uri: Some(root_uri),
-                    capabilities: ClientCapabilities::default(),
-                    ..InitializeParams::default()
-                };
-                match lsp_client.initialize(init_params).await {
-                    Ok(_) => {
-                        self.lsp_client = Some(lsp_client);
-                        log("LSP client initialized successfully");
-                    },
-                    Err(e) => {
-                        log(&format!("Failed to initialize LSP client: {:?}", e));
-                    }
+        if self.is_initializing.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            if let Some(folder_path) = FileDialog::new().pick_folder() {
+                if self.project_path.as_ref() == Some(&folder_path) {
+                    log("Project already open");
+                    self.is_initializing.store(false, Ordering::SeqCst);
+                    return;
                 }
-            });
+                self.project_path = Some(folder_path.clone());
+                let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
+                self.file_system = Some(fs.clone());
+                self.expanded_folders.clear();
+                self.expanded_folders.insert(folder_path.clone());
+                log(&format!("Opened project: {}", folder_path.display()));
 
+                // Set working directory for the terminal
+                if let Ok(terminal) = self.terminal.lock() {
+                    terminal.set_working_directory(folder_path.clone());
+                }
+
+                // Initialize LSP client only if it hasn't been initialized yet
+                self.runtime.block_on(async {
+                    if self.lsp_client.is_none() {
+                        let lsp_client = Arc::new(LspClient::new());
+
+                        let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
+                        let init_params = InitializeParams {
+                            root_uri: Some(root_uri),
+                            capabilities: ClientCapabilities::default(),
+                            ..InitializeParams::default()
+                        };
+                        match lsp_client.initialize(init_params).await {
+                            Ok(_) => {
+                                self.lsp_client = Some(lsp_client);
+                                log("LSP client initialized successfully");
+                            },
+                            Err(e) => {
+                                log(&format!("Failed to initialize LSP client: {:?}", e));
+                            }
+                        }
+                    } else {
+                        log("LSP client already initialized");
+                    }
+                });
+            }
+            self.is_initializing.store(false, Ordering::SeqCst);
+        } else {
+            log("Folder opening already in progress");
         }
     }
 

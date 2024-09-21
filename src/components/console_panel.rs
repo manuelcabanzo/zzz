@@ -2,67 +2,99 @@ use eframe::egui;
 use std::sync::{Arc, Mutex};
 use crossbeam_channel::Receiver;
 use crate::core::terminal::Terminal;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ConsolePanel {
     terminal: Arc<Mutex<Terminal>>,
     output_receiver: Receiver<String>,
     output: Vec<String>,
     input: String,
+    current_working_directory: Arc<Mutex<PathBuf>>,
+    is_process_running: Arc<AtomicBool>,
 }
 
 impl ConsolePanel {
     pub fn new(terminal: Arc<Mutex<Terminal>>, output_receiver: Receiver<String>) -> Self {
+        let current_working_directory = Arc::new(Mutex::new(PathBuf::from("/")));
+        let is_process_running = Arc::new(AtomicBool::new(false));
+        
         Self { 
             terminal,
             output_receiver,
             output: Vec::new(),
             input: String::new(),
+            current_working_directory,
+            is_process_running,
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("console_panel")
-            .resizable(false)
-            .default_height(280.0)
-            .max_height(280.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Console");
-                    if ui.button("Clear").clicked() {
-                        if let Ok(mut terminal) = self.terminal.lock() {
-                            terminal.clear_output();
-                        }
-                        self.output.clear();
-                    }
-                });
-
-                let available_height = ui.available_height();
-                let log_height = available_height - 30.0; // Reserve space for input and heading
-
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .max_height(log_height)
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        for line in &self.output {
-                            ui.label(line);
-                        }
-                    });
-
-                ui.horizontal(|ui| {
-                    ui.label(">");
-                    let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 20.0));
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if let Ok(terminal) = self.terminal.lock() {
-                            terminal.execute(self.input.clone());
-                        }
-                        self.input.clear();
-                    }
-                });
+    
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Console");
+                if ui.button("Clear").clicked() {
+                    self.clear_console();
+                }
             });
 
-        // Request a repaint to update the console more frequently
-        ctx.request_repaint();
+            let available_height = ui.available_height();
+            let log_height = available_height - 30.0; // Reserve space for input and heading
+
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .max_height(log_height)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    for line in &self.output {
+                        ui.label(line);
+                    }
+                });
+
+            ui.horizontal(|ui| {
+                let cwd = self.current_working_directory.lock().unwrap().to_string_lossy().into_owned();
+                ui.label(format!("{}> ", cwd));
+                let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 20.0));
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.execute_command();
+                }
+            });
+
+            // Handle Ctrl+C
+            if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
+                self.handle_ctrl_c();
+            }
+        });
+    }
+
+    fn execute_command(&mut self) {
+        if let Ok(terminal) = self.terminal.lock() {
+            terminal.execute(self.input.clone());
+        }
+        self.input.clear();
+    }
+
+    fn print_working_directory(&mut self) {
+        let cwd = self.current_working_directory.lock().unwrap().to_string_lossy().into_owned();
+        self.output.push(cwd);
+    }
+
+    fn handle_ctrl_c(&mut self) {
+        if self.is_process_running.load(Ordering::SeqCst) {
+            if let Ok(terminal) = self.terminal.lock() {
+                terminal.send_ctrl_c();
+            }
+            self.is_process_running.store(false, Ordering::SeqCst);
+            self.output.push("^C".to_string());
+        }
+    }
+
+    fn clear_console(&mut self) {
+        if let Ok(mut terminal) = self.terminal.lock() {
+            terminal.clear_output();
+        }
+        self.output.clear();
     }
 
     pub fn log(&mut self, message: &str) {
@@ -82,5 +114,10 @@ impl ConsolePanel {
                 self.output.remove(0);
             }
         }
+    }
+
+    pub fn set_working_directory(&mut self, path: PathBuf) {
+        let mut cwd = self.current_working_directory.lock().unwrap();
+        *cwd = path;
     }
 }

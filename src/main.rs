@@ -1,4 +1,3 @@
-#[allow(unused_imports)]
 use eframe::egui;
 use eframe::egui::IconData;
 use image::ImageReader;
@@ -41,9 +40,9 @@ fn main() -> eframe::Result<()> {
     
     let native_options = eframe::NativeOptions {
         viewport,
-        vsync: true,                        // Enable VSync for smoother rendering
-        multisampling: 4,                   // Use 4x multisampling for better rendering quality
-        hardware_acceleration: HardwareAcceleration::Preferred, // Prefer GPU acceleration
+        vsync: true,
+        multisampling: 4,
+        hardware_acceleration: HardwareAcceleration::Preferred,
         centered: true,
         ..Default::default()
     };
