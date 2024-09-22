@@ -11,7 +11,7 @@ use std::os::windows::io::AsRawHandle;
 
 pub struct Terminal {
     input: String,
-    output: VecDeque<String>,
+    output: Arc<Mutex<VecDeque<String>>>,
     output_rx: Receiver<String>,
     working_directory: Arc<Mutex<PathBuf>>,
     output_tx: Sender<String>,
@@ -28,7 +28,7 @@ impl Terminal {
 
         (Self {
             input: String::new(),
-            output: VecDeque::new(),
+            output: Arc::new(Mutex::new(VecDeque::new())),
             output_rx: output_rx.clone(),
             working_directory,
             output_tx,
@@ -50,9 +50,10 @@ impl Terminal {
 
     pub fn update(&mut self) {
         while let Ok(output) = self.output_rx.try_recv() {
-            self.output.push_back(output);
-            if self.output.len() > 1000 {
-                self.output.pop_front();
+            let mut output_lock = self.output.lock().unwrap();
+            output_lock.push_back(output);
+            if output_lock.len() > 1000 {
+                output_lock.pop_front();
             }
         }
     }
@@ -62,7 +63,8 @@ impl Terminal {
             egui::ScrollArea::vertical()
                 .max_height(280.0)
                 .show(ui, |ui| {
-                    for line in &self.output {
+                    let output_lock = self.output.lock().unwrap();
+                    for line in output_lock.iter() {
                         ui.label(line);
                     }
                 });
@@ -79,18 +81,14 @@ impl Terminal {
     }
 
     pub fn append_log(&mut self, message: &str) {
-        self.output.push_back(message.to_string());
-        if self.output.len() > 1000 {
-            self.output.pop_front();
+        let mut output_lock = self.output.lock().unwrap();
+        output_lock.push_back(message.to_string());
+        if output_lock.len() > 1000 {
+            output_lock.pop_front();
         }
         self.output_tx.send(message.to_string()).expect("Failed to send log message");
     }
 
-    pub fn clear_output(&mut self) {
-        self.output.clear();
-    }
-
-    
     pub fn send_ctrl_c(&self) {
         self.stop_current_process();
     }
@@ -115,10 +113,21 @@ impl Terminal {
             self.output_tx.send("Process stopped".to_string()).expect("Failed to send stop message");
         }
     }
-
+    
+    pub fn clear_output(&self) {
+        self.output.lock().unwrap().clear();
+        // Send a special message to indicate clearing the console
+        self.output_tx.send("__CLEAR_CONSOLE__".to_string()).expect("Failed to send clear message");
+    }
+    
     pub fn execute(&self, command: String) {
         if command.trim() == "stop" {
             self.stop_current_process();
+            return;
+        }
+
+        if command.trim() == "clear" {
+            self.clear_output();
             return;
         }
 

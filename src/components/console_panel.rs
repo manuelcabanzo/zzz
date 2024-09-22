@@ -69,7 +69,7 @@ impl ConsolePanel {
     }
 
     fn execute_command(&mut self) {
-        if let Ok(terminal) = self.terminal.lock() {
+        if let Ok( terminal) = self.terminal.lock() {
             terminal.execute(self.input.clone());
         }
         self.input.clear();
@@ -86,7 +86,7 @@ impl ConsolePanel {
     }
 
     fn clear_console(&mut self) {
-        if let Ok(mut terminal) = self.terminal.lock() {
+        if let Ok(terminal) = self.terminal.lock() {
             terminal.clear_output();
         }
         self.output.clear();
@@ -103,13 +103,17 @@ impl ConsolePanel {
     }
 
     pub fn update(&mut self) {
-        while let Ok(message) = self.output_receiver.try_recv() {
+    while let Ok(message) = self.output_receiver.try_recv() {
+        if message == "__CLEAR_CONSOLE__" {
+            self.output.clear();
+        } else {
             self.output.push(message);
             if self.output.len() > 1000 {
                 self.output.remove(0);
             }
         }
     }
+}
 
     pub fn set_working_directory(&mut self, path: PathBuf) {
         let mut terminal = self.terminal.lock().unwrap();
