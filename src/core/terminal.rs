@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::process::{Command, Stdio, Child};
 use std::thread;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ pub struct Terminal {
     input: String,
     output: VecDeque<String>,
     output_rx: Receiver<String>,
-    working_directory: Arc<Mutex<Option<PathBuf>>>,
+    working_directory: Arc<Mutex<PathBuf>>,
     output_tx: Sender<String>,
     current_process: Arc<Mutex<Option<Child>>>,
     is_running: Arc<AtomicBool>,
@@ -22,7 +22,7 @@ pub struct Terminal {
 impl Terminal {
     pub fn new() -> (Self, Receiver<String>) {
         let (output_tx, output_rx) = unbounded::<String>();
-        let working_directory = Arc::new(Mutex::new(None));
+        let working_directory = Arc::new(Mutex::new(PathBuf::from("/")));
         let current_process = Arc::new(Mutex::new(None));
         let is_running = Arc::new(AtomicBool::new(false));
 
@@ -37,11 +37,15 @@ impl Terminal {
         }, output_rx)
     }
     
-    pub fn set_working_directory(&self, path: PathBuf) {
+    pub fn set_working_directory(&mut self, path: PathBuf) {
         let mut working_dir = self.working_directory.lock().unwrap();
-        *working_dir = Some(path.clone());
+        *working_dir = path.clone();
         // Log the new working directory
         self.output_tx.send(format!("Working directory set to: {:?}", path)).expect("Failed to send log message");
+    }
+
+    pub fn get_working_directory(&self) -> PathBuf {
+        self.working_directory.lock().unwrap().clone()
     }
 
     pub fn update(&mut self) {
@@ -137,12 +141,11 @@ impl Terminal {
                 cmd
             };
 
-            if let Some(dir) = dir.as_ref() {
-                process_command.current_dir(dir);
+            if let Some(dir_str) = dir.to_str() {
+                process_command.current_dir(dir_str);
             }
 
             let _ = output_tx.send(format!("Executing command: {} in directory: {:?}", command, dir));
-
             let process = process_command
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -196,63 +199,3 @@ impl Terminal {
     }
 }
 
-fn execute_command(command: &str, output_tx: Sender<String>, working_dir: Option<PathBuf>, current_process: Arc<Mutex<Option<Child>>>, is_running: Arc<AtomicBool>) {
-    let mut process_command = if cfg!(target_os = "windows") {
-        let mut cmd = Command::new("cmd");
-        cmd.args(&["/C", command]);
-        cmd
-    } else {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(command);
-        cmd
-    };
-
-    if let Some(dir) = working_dir.as_ref() {
-        process_command.current_dir(dir);
-    }
-
-    let _ = output_tx.send(format!("Executing command: {} in directory: {:?}", command, working_dir));
-
-    let process = process_command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-
-    if let Ok(child) = process {
-        *current_process.lock().unwrap() = Some(child);
-
-        if let Some(child) = &mut *current_process.lock().unwrap() {
-            if let Some(stdout) = child.stdout.take() {
-                let stdout_reader = BufReader::new(stdout);
-                let output_tx_clone = output_tx.clone();
-                thread::spawn(move || {
-                    for line in stdout_reader.lines() {
-                        if let Ok(line) = line {
-                            output_tx_clone.send(line).expect("Failed to send stdout line");
-                        }
-                    }
-                });
-            }
-
-            if let Some(stderr) = child.stderr.take() {
-                let stderr_reader = BufReader::new(stderr);
-                let output_tx_clone = output_tx.clone();
-                thread::spawn(move || {
-                    for line in stderr_reader.lines() {
-                        if let Ok(line) = line {
-                            output_tx_clone.send(line).expect("Failed to send stderr line");
-                        }
-                    }
-                });
-            }
-
-            let _ = child.wait(); // Wait for the process to finish
-            is_running.store(false, Ordering::SeqCst);
-        }
-        
-        *current_process.lock().unwrap() = None;
-    } else {
-        let _ = output_tx.send("Failed to execute command".to_string());
-        is_running.store(false, Ordering::SeqCst);
-    }
-}

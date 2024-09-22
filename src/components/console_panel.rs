@@ -10,13 +10,11 @@ pub struct ConsolePanel {
     output_receiver: Receiver<String>,
     output: Vec<String>,
     input: String,
-    current_working_directory: Arc<Mutex<PathBuf>>,
     is_process_running: Arc<AtomicBool>,
 }
 
 impl ConsolePanel {
     pub fn new(terminal: Arc<Mutex<Terminal>>, output_receiver: Receiver<String>) -> Self {
-        let current_working_directory = Arc::new(Mutex::new(PathBuf::from("/")));
         let is_process_running = Arc::new(AtomicBool::new(false));
         
         Self { 
@@ -24,12 +22,10 @@ impl ConsolePanel {
             output_receiver,
             output: Vec::new(),
             input: String::new(),
-            current_working_directory,
             is_process_running,
         }
     }
 
-    
     pub fn show(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
@@ -53,7 +49,11 @@ impl ConsolePanel {
                 });
 
             ui.horizontal(|ui| {
-                let cwd = self.current_working_directory.lock().unwrap().to_string_lossy().into_owned();
+                let cwd = if let Ok(terminal) = self.terminal.lock() {
+                    terminal.get_working_directory().to_string_lossy().into_owned()
+                } else {
+                    String::from("/")
+                };
                 ui.label(format!("{}> ", cwd));
                 let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 20.0));
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -73,11 +73,6 @@ impl ConsolePanel {
             terminal.execute(self.input.clone());
         }
         self.input.clear();
-    }
-
-    fn print_working_directory(&mut self) {
-        let cwd = self.current_working_directory.lock().unwrap().to_string_lossy().into_owned();
-        self.output.push(cwd);
     }
 
     fn handle_ctrl_c(&mut self) {
@@ -117,7 +112,7 @@ impl ConsolePanel {
     }
 
     pub fn set_working_directory(&mut self, path: PathBuf) {
-        let mut cwd = self.current_working_directory.lock().unwrap();
-        *cwd = path;
+        let mut terminal = self.terminal.lock().unwrap();
+        terminal.set_working_directory(path);
     }
 }

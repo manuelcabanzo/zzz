@@ -380,7 +380,7 @@ impl FileModal {
                 log(&format!("Opened project: {}", folder_path.display()));
 
                 // Set working directory for the terminal
-                if let Ok(terminal) = self.terminal.lock() {
+                if let Ok(mut terminal) = self.terminal.lock() {
                     terminal.set_working_directory(folder_path.clone());
                 }
 
