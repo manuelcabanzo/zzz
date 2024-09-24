@@ -118,12 +118,12 @@ impl IDE {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {    
-            let available_height = ui.available_height() - 30.0;
-            let console_height = 300.0; // Fixed console height
+            let available_height = 715.0; 
+            let console_height = 280.0; // Fixed console height
             let editor_height = if self.show_console_panel {
                 available_height - console_height
             } else {
-                available_height - 20.0
+                available_height
             };
             
             self.code_editor.show(ui, editor_height);
