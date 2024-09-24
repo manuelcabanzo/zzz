@@ -19,6 +19,7 @@ lsp-types = "0.94.0"
 image = "0.25.2"
 crossbeam-channel = "0.5.13"
 nix = "0.29.0"
+ctrlc = "3.4.5"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt"] }

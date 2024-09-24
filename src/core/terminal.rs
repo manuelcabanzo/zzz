@@ -3,8 +3,8 @@ use std::io::BufRead;
 use std::process::{Command, Stdio, Child};
 use std::thread;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use ctrlc;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use crossbeam_channel::{unbounded, Sender, Receiver};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
@@ -26,17 +26,32 @@ impl Terminal {
         let current_process = Arc::new(Mutex::new(None));
         let is_running = Arc::new(AtomicBool::new(false));
 
-        (Self {
+        // Clone output_tx for the Ctrl+C handler
+        let output_tx_clone = output_tx.clone();
+        let is_running_clone = is_running.clone();
+
+        // Initialize the Terminal
+        let terminal = Self {
             input: String::new(),
             output: Arc::new(Mutex::new(VecDeque::new())),
             output_rx: output_rx.clone(),
+            output_tx, // Original tx here
             working_directory,
-            output_tx,
             current_process,
-            is_running,
-        }, output_rx)
+            is_running: is_running.clone(),
+        };
+
+        // Set up the Ctrl+C handler
+        ctrlc::set_handler(move || {
+            if is_running_clone.load(Ordering::SeqCst) {
+                let _ = output_tx_clone.send("^C received, process stopping...".to_string());
+                is_running_clone.store(false, Ordering::SeqCst);
+            }
+        }).expect("Error setting Ctrl-C handler");
+
+        (terminal, output_rx)
     }
-    
+
     pub fn set_working_directory(&mut self, path: PathBuf) {
         let mut working_dir = self.working_directory.lock().unwrap();
         *working_dir = path.clone();
@@ -93,26 +108,28 @@ impl Terminal {
         self.stop_current_process();
     }
 
-    fn stop_current_process(&self) {
-        if let Some(child) = self.current_process.lock().unwrap().take() {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
-            }
-            #[cfg(windows)]
-            {
-                use winapi::um::processthreadsapi::TerminateProcess;
-                use winapi::um::winnt::HANDLE;
-                unsafe {
-                    TerminateProcess(child.as_raw_handle() as HANDLE, 1);
-                }
-            }
-            self.is_running.store(false, Ordering::SeqCst);
-            self.output_tx.send("Process stopped".to_string()).expect("Failed to send stop message");
+    
+fn stop_current_process(&self) {
+    if let Some(child) = self.current_process.lock().unwrap().take() {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
         }
+        #[cfg(windows)]
+        {
+            use winapi::um::processthreadsapi::TerminateProcess;
+            use winapi::um::winnt::HANDLE;
+            unsafe {
+                TerminateProcess(child.as_raw_handle() as HANDLE, 1);
+            }
+        }
+        self.is_running.store(false, Ordering::SeqCst);
+        self.output_tx.send("Process stopped".to_string()).expect("Failed to send stop message");
     }
+}
+
     
     pub fn clear_output(&self) {
         self.output.lock().unwrap().clear();

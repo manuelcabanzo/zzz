@@ -84,7 +84,7 @@ impl ConsolePanel {
             self.output.push("^C".to_string());
         }
     }
-
+    
     fn clear_console(&mut self) {
         if let Ok(terminal) = self.terminal.lock() {
             terminal.clear_output();
