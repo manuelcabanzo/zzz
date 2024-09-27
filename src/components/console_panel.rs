@@ -3,26 +3,22 @@ use std::sync::{Arc, Mutex};
 use crossbeam_channel::Receiver;
 use crate::core::terminal::Terminal;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ConsolePanel {
     terminal: Arc<Mutex<Terminal>>,
     output_receiver: Receiver<String>,
     output: Vec<String>,
     input: String,
-    is_process_running: Arc<AtomicBool>,
 }
 
 impl ConsolePanel {
     pub fn new(terminal: Arc<Mutex<Terminal>>, output_receiver: Receiver<String>) -> Self {
-        let is_process_running = Arc::new(AtomicBool::new(false));
         
         Self { 
             terminal,
             output_receiver,
             output: Vec::new(),
             input: String::new(),
-            is_process_running,
         }
     }
 
@@ -60,11 +56,6 @@ impl ConsolePanel {
                     self.execute_command();
                 }
             });
-
-            // Handle Ctrl+C
-            if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
-                self.handle_ctrl_c();
-            }
         });
     }
 
@@ -75,16 +66,6 @@ impl ConsolePanel {
         self.input.clear();
     }
 
-    fn handle_ctrl_c(&mut self) {
-        if self.is_process_running.load(Ordering::SeqCst) {
-            if let Ok(terminal) = self.terminal.lock() {
-                terminal.send_ctrl_c();
-            }
-            self.is_process_running.store(false, Ordering::SeqCst);
-            self.output.push("^C".to_string());
-        }
-    }
-    
     fn clear_console(&mut self) {
         if let Ok(terminal) = self.terminal.lock() {
             terminal.clear_output();
@@ -103,17 +84,17 @@ impl ConsolePanel {
     }
 
     pub fn update(&mut self) {
-    while let Ok(message) = self.output_receiver.try_recv() {
-        if message == "__CLEAR_CONSOLE__" {
-            self.output.clear();
-        } else {
-            self.output.push(message);
-            if self.output.len() > 1000 {
-                self.output.remove(0);
+        while let Ok(message) = self.output_receiver.try_recv() {
+            if message == "__CLEAR_CONSOLE__" {
+                self.output.clear();
+            } else {
+                self.output.push(message);
+                if self.output.len() > 1000 {
+                    self.output.remove(0);
+                }
             }
         }
     }
-}
 
     pub fn set_working_directory(&mut self, path: PathBuf) {
         let mut terminal = self.terminal.lock().unwrap();

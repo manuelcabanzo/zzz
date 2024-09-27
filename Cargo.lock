@@ -5101,12 +5101,10 @@ dependencies = [
  "image",
  "log",
  "lsp-types",
- "nix 0.29.0",
  "rfd",
  "serde",
  "serde_json",
  "syntect",
  "tokio",
  "tower-lsp",
- "winapi",
 ]
