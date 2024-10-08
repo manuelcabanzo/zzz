@@ -13,8 +13,7 @@ pub struct ConsolePanel {
 
 impl ConsolePanel {
     pub fn new(terminal: Arc<Mutex<Terminal>>, output_receiver: Receiver<String>) -> Self {
-        
-        Self { 
+        Self {
             terminal,
             output_receiver,
             output: Vec::new(),
@@ -28,6 +27,10 @@ impl ConsolePanel {
                 ui.heading("Console");
                 if ui.button("Clear").clicked() {
                     self.clear_console();
+                }
+                let is_running = self.terminal.lock().unwrap().is_running.load(std::sync::atomic::Ordering::SeqCst);
+                if ui.add_enabled(is_running, egui::Button::new("Stop")).clicked() {
+                    self.stop_current_process();
                 }
             });
 
@@ -59,11 +62,19 @@ impl ConsolePanel {
         });
     }
 
-    fn execute_command(&mut self) {
-        if let Ok( terminal) = self.terminal.lock() {
-            terminal.execute(self.input.clone());
+    fn stop_current_process(&self) {
+        if let Ok(terminal) = self.terminal.lock() {
+            terminal.stop_current_process();
         }
-        self.input.clear();
+    }
+    
+    fn execute_command(&mut self) {
+        if !self.input.trim().is_empty() {
+            if let Ok(terminal) = self.terminal.lock() {
+                terminal.execute(self.input.clone());
+            }
+            self.input.clear();
+        }
     }
 
     fn clear_console(&mut self) {

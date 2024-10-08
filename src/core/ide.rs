@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Rect, Stroke, Color32, Painter, Vec2};
 use crate::components::{
     file_modal::FileModal,
     code_editor::CodeEditor,
@@ -28,10 +28,10 @@ pub struct IDE {
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let (terminal, output_receiver) = Terminal::new();
+        let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+        let (terminal, output_receiver) = Terminal::new(Arc::clone(&runtime));
         let terminal = Arc::new(Mutex::new(terminal));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
-        let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
 
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime), Arc::clone(&terminal)),
@@ -51,6 +51,7 @@ impl IDE {
 
         ide
     }
+
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Num1) && i.modifiers.ctrl {
@@ -84,22 +85,101 @@ impl IDE {
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
+        let button_size = egui::vec2(title_bar_height - 6.0, title_bar_height - 6.0);
         ui.set_height(title_bar_height);
+        
         ui.horizontal(|ui| {
             ui.label(&self.title);
+
+            // TODO: Add more title bar elements here
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("❌").clicked() {
+                let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+
+                // Close button (X)
+                if self.draw_title_button(ui, button_size, |painter, rect, color| {
+                    let line_start1 = rect.left_top() + Vec2::new(4.0, 4.0);
+                    let line_end1 = rect.right_bottom() - Vec2::new(4.0, 4.0);
+                    let line_start2 = rect.right_top() + Vec2::new(-4.0, 4.0);
+                    let line_end2 = rect.left_bottom() + Vec2::new(4.0, -4.0);
+                    painter.line_segment([line_start1, line_end1], Stroke::new(1.0, color));
+                    painter.line_segment([line_start2, line_end2], Stroke::new(1.0, color));
+                }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                if ui.button("🗖").clicked() {
-                    let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+
+                // Maximize/Restore button
+                if self.draw_title_button(ui, button_size, |painter, rect, color| {
+                    if is_maximized {
+                        // Draw a "restore down" icon
+                        let small_rect = Rect::from_min_size(
+                            rect.left_top() + Vec2::new(4.0, 4.0),
+                            Vec2::new(rect.width() - 8.0, rect.height() - 8.0)
+                        );
+                        painter.rect_stroke(small_rect, 0.0, Stroke::new(1.0, color));
+                        painter.line_segment(
+                            [small_rect.left_top() + Vec2::new(-2.0, -2.0), small_rect.right_top() + Vec2::new(-2.0, -2.0)],
+                            Stroke::new(1.0, color)
+                        );
+                        painter.line_segment(
+                            [small_rect.left_top() + Vec2::new(-2.0, -2.0), small_rect.left_bottom() + Vec2::new(-2.0, -2.0)],
+                            Stroke::new(1.0, color)
+                        );
+                    } else {
+                        // Draw a "maximize" icon
+                        painter.rect_stroke(rect.shrink(4.0), 0.0, Stroke::new(1.0, color));
+                        painter.line_segment(
+                            [rect.left_top() + Vec2::new(4.0, 7.0), rect.right_top() + Vec2::new(-4.0, 7.0)],
+                            Stroke::new(1.0, color)
+                        );
+                    }
+                }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                 }
-                if ui.button("🗕").clicked() {
+
+                // Minimize button (-)
+                if self.draw_title_button(ui, button_size, |painter, rect, color| {
+                    let line_start = rect.left_center() + Vec2::new(4.0, 0.0);
+                    let line_end = rect.right_center() + Vec2::new(-4.0, 0.0);
+                    painter.line_segment([line_start, line_end], Stroke::new(1.0, color));
+                }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
             });
         });
+    }
+
+    fn draw_title_button<F>(&self, ui: &mut egui::Ui, size: egui::Vec2, draw_func: F) -> egui::Response 
+    where F: FnOnce(&Painter, Rect, Color32) {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().noninteractive();
+            let base_color = visuals.fg_stroke.color;
+            
+            let color = if response.clicked() {
+                self.adjust_color(base_color, -30)
+            } else if response.hovered() {
+                self.adjust_color(base_color, 40)
+            } else {
+                base_color
+            };
+
+            let painter = ui.painter();
+            draw_func(&painter, rect, color);
+        }
+
+        response
+    }
+
+    fn adjust_color(&self, color: Color32, amount: i16) -> Color32 {
+        let [r, g, b, a] = color.to_array();
+        Color32::from_rgba_unmultiplied(
+            (r as i16 + amount).clamp(0, 255) as u8,
+            (g as i16 + amount).clamp(0, 255) as u8,
+            (b as i16 + amount).clamp(0, 255) as u8,
+            a
+        )
     }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
