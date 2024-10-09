@@ -85,25 +85,23 @@ impl IDE {
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
-        let button_size = egui::vec2(title_bar_height - 6.0, title_bar_height - 6.0);
+        let button_size = egui::vec2(title_bar_height * 0.4, title_bar_height * 0.4); // Reduced button size
         ui.set_height(title_bar_height);
         
         ui.horizontal(|ui| {
             ui.label(&self.title);
-
-            // TODO: Add more title bar elements here
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
 
                 // Close button (X)
                 if self.draw_title_button(ui, button_size, |painter, rect, color| {
-                    let line_start1 = rect.left_top() + Vec2::new(4.0, 4.0);
-                    let line_end1 = rect.right_bottom() - Vec2::new(4.0, 4.0);
-                    let line_start2 = rect.right_top() + Vec2::new(-4.0, 4.0);
-                    let line_end2 = rect.left_bottom() + Vec2::new(4.0, -4.0);
-                    painter.line_segment([line_start1, line_end1], Stroke::new(1.0, color));
-                    painter.line_segment([line_start2, line_end2], Stroke::new(1.0, color));
+                    let line_start1 = rect.left_top() + Vec2::new(1.8, 1.8);
+                    let line_end1 = rect.right_bottom() - Vec2::new(1.8, 1.8);
+                    let line_start2 = rect.right_top() + Vec2::new(-1.8, 1.8);
+                    let line_end2 = rect.left_bottom() + Vec2::new(1.8, -1.8);
+                    painter.line_segment([line_start1, line_end1], Stroke::new(1.3, color));
+                    painter.line_segment([line_start2, line_end2], Stroke::new(1.3, color));
                 }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -113,25 +111,21 @@ impl IDE {
                     if is_maximized {
                         // Draw a "restore down" icon
                         let small_rect = Rect::from_min_size(
-                            rect.left_top() + Vec2::new(4.0, 4.0),
-                            Vec2::new(rect.width() - 8.0, rect.height() - 8.0)
+                            rect.left_top() + Vec2::new(2.0, 2.0),
+                            Vec2::new(rect.width() - 4.0, rect.height() - 4.0)
                         );
-                        painter.rect_stroke(small_rect, 0.0, Stroke::new(1.0, color));
+                        painter.rect_stroke(small_rect, 0.0, Stroke::new(0.5, color));
                         painter.line_segment(
-                            [small_rect.left_top() + Vec2::new(-2.0, -2.0), small_rect.right_top() + Vec2::new(-2.0, -2.0)],
-                            Stroke::new(1.0, color)
+                            [small_rect.left_top() + Vec2::new(-1.0, -1.0), small_rect.right_top() + Vec2::new(-1.0, -1.0)],
+                            Stroke::new(0.5, color)
                         );
                         painter.line_segment(
-                            [small_rect.left_top() + Vec2::new(-2.0, -2.0), small_rect.left_bottom() + Vec2::new(-2.0, -2.0)],
-                            Stroke::new(1.0, color)
+                            [small_rect.left_top() + Vec2::new(-1.0, -1.0), small_rect.left_bottom() + Vec2::new(-1.0, -1.0)],
+                            Stroke::new(0.5, color)
                         );
                     } else {
-                        // Draw a "maximize" icon
-                        painter.rect_stroke(rect.shrink(4.0), 0.0, Stroke::new(1.0, color));
-                        painter.line_segment(
-                            [rect.left_top() + Vec2::new(4.0, 7.0), rect.right_top() + Vec2::new(-4.0, 7.0)],
-                            Stroke::new(1.0, color)
-                        );
+                        // Draw a "maximize" icon (simple square)
+                        painter.rect_stroke(rect.shrink(1.5), 0.0, Stroke::new(0.5, color));
                     }
                 }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
@@ -139,9 +133,9 @@ impl IDE {
 
                 // Minimize button (-)
                 if self.draw_title_button(ui, button_size, |painter, rect, color| {
-                    let line_start = rect.left_center() + Vec2::new(4.0, 0.0);
-                    let line_end = rect.right_center() + Vec2::new(-4.0, 0.0);
-                    painter.line_segment([line_start, line_end], Stroke::new(1.0, color));
+                    let line_start = rect.left_center() + Vec2::new(1.8, 0.0);
+                    let line_end = rect.right_center() + Vec2::new(-1.8, 0.0);
+                    painter.line_segment([line_start, line_end], Stroke::new(0.5, color));
                 }).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
