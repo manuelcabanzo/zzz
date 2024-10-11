@@ -28,13 +28,15 @@ impl SettingsModal {
             return;
         }
 
-        let modal_size = egui::vec2(400.0, 500.0);
+        let modal_size = egui::vec2(500.0, 500.0);
         egui::Window::new("Settings")
             .fixed_size(modal_size)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+
+                ui.set_min_size(modal_size);
                 ui.heading("Settings");
                 ui.add_space(10.0);
 
