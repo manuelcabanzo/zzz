@@ -8,9 +8,9 @@ use crate::components::{
 };
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
-use std::sync::{Arc, Mutex};
-use crate::core::terminal::Terminal;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use crossbeam_channel::unbounded;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -29,14 +29,13 @@ pub struct IDE {
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-        let (terminal, output_receiver) = Terminal::new(Arc::clone(&runtime));
-        let terminal = Arc::new(Mutex::new(terminal));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
+        let (_output_sender, output_receiver) = unbounded();
 
         let ide = Self {
-            file_modal: FileModal::new(Arc::clone(&runtime), Arc::clone(&terminal)),
+            file_modal: FileModal::new(Arc::clone(&runtime)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
-            console_panel: ConsolePanel::new(Arc::clone(&terminal), output_receiver),
+            console_panel: ConsolePanel::new(output_receiver),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,
@@ -44,7 +43,7 @@ impl IDE {
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
             lsp_initialized: AtomicBool::new(false),
-            runtime, // Add this line
+            runtime,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);

@@ -1,114 +1,60 @@
 use eframe::egui;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use crossbeam_channel::Receiver;
-use crate::core::terminal::Terminal;
-use std::path::PathBuf;
 
 pub struct ConsolePanel {
-    terminal: Arc<Mutex<Terminal>>,
-    output_receiver: Receiver<String>,
     output: Vec<String>,
-    input: String,
+    output_receiver: Receiver<String>,
+    current_directory: Arc<std::sync::Mutex<String>>,
 }
 
 impl ConsolePanel {
-    pub fn new(terminal: Arc<Mutex<Terminal>>, output_receiver: Receiver<String>) -> Self {
+    pub fn new(output_receiver: Receiver<String>) -> Self {
         Self {
-            terminal,
-            output_receiver,
             output: Vec::new(),
-            input: String::new(),
+            output_receiver,
+            current_directory: Arc::new(std::sync::Mutex::new(String::from("/")))
         }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Console");
-                if ui.button("Clear").clicked() {
-                    self.clear_console();
-                }
-                let is_running = self.terminal.lock().unwrap().is_running.load(std::sync::atomic::Ordering::SeqCst);
-                if ui.add_enabled(is_running, egui::Button::new("Stop")).clicked() {
-                    self.stop_current_process();
-                }
-            });
+            ui.heading("Console");
+
+            let current_dir = self.current_directory.lock().unwrap().clone();
+            ui.label(format!("Current Directory: {}", current_dir));
 
             let available_height = ui.available_height();
-            let log_height = available_height - 30.0; // Reserve space for input and heading
-
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
-                .max_height(log_height)
+                .max_height(available_height - 40.0)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     for line in &self.output {
                         ui.label(line);
                     }
                 });
-
-            ui.horizontal(|ui| {
-                let cwd = if let Ok(terminal) = self.terminal.lock() {
-                    terminal.get_working_directory().to_string_lossy().into_owned()
-                } else {
-                    String::from("/")
-                };
-                ui.label(format!("{}> ", cwd));
-                let response = ui.add(egui::TextEdit::singleline(&mut self.input).desired_width(ui.available_width() - 20.0));
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.execute_command();
-                }
-            });
         });
     }
 
-    fn stop_current_process(&self) {
-        if let Ok(terminal) = self.terminal.lock() {
-            terminal.stop_current_process();
-        }
-    }
-    
-    fn execute_command(&mut self) {
-        if !self.input.trim().is_empty() {
-            if let Ok(terminal) = self.terminal.lock() {
-                terminal.execute(self.input.clone());
+    pub fn update(&mut self) {
+        while let Ok(message) = self.output_receiver.try_recv() {
+            self.output.push(message);
+            if self.output.len() > 1000 {
+                self.output.remove(0);
             }
-            self.input.clear();
         }
-    }
-
-    fn clear_console(&mut self) {
-        if let Ok(terminal) = self.terminal.lock() {
-            terminal.clear_output();
-        }
-        self.output.clear();
     }
 
     pub fn log(&mut self, message: &str) {
-        if let Ok(mut terminal) = self.terminal.lock() {
-            terminal.append_log(message);
-        }
         self.output.push(message.to_string());
         if self.output.len() > 1000 {
             self.output.remove(0);
         }
     }
 
-    pub fn update(&mut self) {
-        while let Ok(message) = self.output_receiver.try_recv() {
-            if message == "__CLEAR_CONSOLE__" {
-                self.output.clear();
-            } else {
-                self.output.push(message);
-                if self.output.len() > 1000 {
-                    self.output.remove(0);
-                }
-            }
-        }
-    }
-
-    pub fn set_working_directory(&mut self, path: PathBuf) {
-        let mut terminal = self.terminal.lock().unwrap();
-        terminal.set_working_directory(path);
+    pub fn set_current_directory(&self, path: String) {
+        let mut current_dir = self.current_directory.lock().unwrap();
+        *current_dir = path;
     }
 }
