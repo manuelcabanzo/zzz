@@ -62,6 +62,25 @@ impl LanguageServer for TypeScriptLanguageServer {
                 }
             }
         }
+
+        // Add simple diagnostics
+        let diagnostics = vec![
+            Diagnostic {
+                range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+                severity: Some(DiagnosticSeverity::WARNING),
+                code: None,
+                code_description: None,
+                source: Some("ts-language-server".to_string()),
+                message: "This is a sample diagnostic".to_string(),
+                related_information: None,
+                tags: None,
+                data: None,
+            }
+        ];
+
+        self.client
+            .publish_diagnostics(params.text_document.uri.clone(), diagnostics, None)
+            .await;
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {

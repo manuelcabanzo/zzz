@@ -20,7 +20,6 @@ use lsp_types::{
 use tokio::runtime::Runtime;
 use crate::core::lsp_client::LspClient;
 
-
 pub struct CodeEditor {
     pub code: String,
     pub current_file: Option<String>,
@@ -33,6 +32,7 @@ pub struct CodeEditor {
     hover_text: Arc<Mutex<Option<String>>>,   
     needs_update: Arc<Mutex<bool>>,
     cursor_position: Position,
+    diagnostics: Arc<Mutex<Vec<(Position, String)>>>,
 }
 
 impl CodeEditor {
@@ -49,6 +49,7 @@ impl CodeEditor {
             hover_text: Arc::new(Mutex::new(None)),
             cursor_position: Position::new(0, 0),
             needs_update: Arc::new(Mutex::new(false)),
+            diagnostics: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -101,6 +102,7 @@ impl CodeEditor {
                     self.cursor_position = Position::new(row, column);
                     self.update_completion();
                     self.update_hover();
+                    self.update_diagnostics(); // Add this line
                 }
 
                 if *self.needs_update.lock().unwrap() {
@@ -162,7 +164,21 @@ impl CodeEditor {
                         .show(ui.ctx(), |ui| {
                             ui.label(hover_text);
                         });
-                }       
+                }
+
+                // Display diagnostics
+                let diagnostics = self.diagnostics.lock().unwrap().clone();
+                for (position, message) in diagnostics {
+                    let line_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                    let y_offset = position.line as f32 * line_height;
+                    ui.painter().text(
+                        response.rect.left_top() + egui::vec2(0.0, y_offset),
+                        egui::Align2::LEFT_TOP,
+                        &message,
+                        egui::TextStyle::Monospace.resolve(ui.style()),
+                        egui::Color32::RED,
+                    );
+                }     
             });
     }
 
@@ -300,6 +316,28 @@ impl CodeEditor {
                     },
                     Err(e) => {
                         eprintln!("Error getting hover information: {:?}", e);
+                    }
+                }
+            });
+        }
+    }
+    
+    fn update_diagnostics(&self) {
+        if let Some(lsp_client) = &self.lsp_client {
+            let lsp_client = Arc::clone(lsp_client);
+            let diagnostics = Arc::clone(&self.diagnostics);
+            let needs_update = Arc::clone(&self.needs_update);
+            let current_file = self.current_file.clone();
+
+            tokio::spawn(async move {
+                if let Some(file) = current_file {
+                    let uri = Url::from_file_path(file).unwrap();
+                    if let Ok(new_diagnostics) = lsp_client.get_diagnostics(uri).await {
+                        let mut diagnostics = diagnostics.lock().unwrap();
+                        *diagnostics = new_diagnostics.into_iter()
+                            .map(|d| (d.range.start, d.message))
+                            .collect();
+                        *needs_update.lock().unwrap() = true;
                     }
                 }
             });

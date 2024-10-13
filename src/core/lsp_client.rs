@@ -6,12 +6,14 @@ use std::collections::HashMap;
 
 pub struct LspClient {
     document_map: Arc<Mutex<HashMap<Url, String>>>,
+    diagnostics: Arc<Mutex<HashMap<Url, Vec<Diagnostic>>>>,
 }
 
 impl LspClient {
     pub fn new() -> Self {
         Self {
             document_map: Arc::new(Mutex::new(HashMap::new())),
+            diagnostics: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -40,7 +42,17 @@ impl LspClient {
             CompletionItem::new_simple("placeholder".to_string(), "Placeholder completion".to_string()),
         ])))
     }
+    
+    pub async fn get_diagnostics(&self, uri: Url) -> Result<Vec<Diagnostic>> {
+        let diagnostics = self.diagnostics.lock().await;
+        Ok(diagnostics.get(&uri).cloned().unwrap_or_default())
+    }
 
+    pub async fn publish_diagnostics(&self, params: PublishDiagnosticsParams) {
+        let mut diagnostics = self.diagnostics.lock().await;
+        diagnostics.insert(params.uri, params.diagnostics);
+    }
+    
     pub async fn hover(&self, _params: HoverParams) -> Result<Option<Hover>> {
         // Implement hover logic here
         // For now, return a placeholder response
