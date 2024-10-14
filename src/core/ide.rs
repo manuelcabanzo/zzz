@@ -10,7 +10,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crossbeam_channel::unbounded;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -30,12 +29,11 @@ impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
-        let (_output_sender, output_receiver) = unbounded();
 
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
-            console_panel: ConsolePanel::new(output_receiver),
+            console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,
