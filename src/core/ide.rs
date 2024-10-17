@@ -188,6 +188,12 @@ impl IDE {
             self.emulator_panel.show(ctx);
         }
 
+        if let Some(new_project_path) = self.file_modal.project_path.clone() {
+            if self.console_panel.project_path.as_ref() != Some(&new_project_path) {
+                self.console_panel.set_project_path(new_project_path);
+            }
+        }
+        
         egui::CentralPanel::default().show(ctx, |ui| {    
             let available_height = 715.0; 
             let console_height = 280.0; // Fixed console height

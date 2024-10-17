@@ -3,32 +3,33 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
 use crossbeam_channel::{unbounded, Sender, Receiver};
 use eframe::egui;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Terminal {
-    pub current_directory: Arc<Mutex<String>>,
+    pub current_directory: Arc<Mutex<PathBuf>>,
     input: String,
     pub output: Vec<String>,
     child_process: Option<Child>,
     stdin_tx: Option<Sender<String>>,
     stdout_rx: Option<Receiver<String>>,
-    ctrl_c_requested: Arc<Mutex<bool>>,
+    running: Arc<AtomicBool>,
 }
 
 impl Terminal {
-    
-    pub fn new() -> Self {
+    pub fn new(initial_path: PathBuf) -> Self {
         let (stdin_tx, stdin_rx) = unbounded();
         let (stdout_tx, stdout_rx) = unbounded();
-        let ctrl_c_requested = Arc::new(Mutex::new(false));
-
+        let running = Arc::new(AtomicBool::new(true));
+        
         let mut terminal = Self {
-            current_directory: Arc::new(Mutex::new(std::env::current_dir().unwrap().to_string_lossy().into_owned())),
+            current_directory: Arc::new(Mutex::new(initial_path)),
             input: String::new(),
             output: Vec::new(),
             child_process: None,
             stdin_tx: Some(stdin_tx),
             stdout_rx: Some(stdout_rx),
-            ctrl_c_requested: Arc::clone(&ctrl_c_requested),
+            running: Arc::clone(&running),
         };
 
         terminal.spawn_shell();
@@ -36,7 +37,6 @@ impl Terminal {
 
         terminal
     }
-
 
     fn spawn_shell(&mut self) {
         let mut cmd = if cfg!(target_os = "windows") {
@@ -55,7 +55,8 @@ impl Terminal {
 
     fn start_io_threads(&mut self, stdin_rx: Receiver<String>, stdout_tx: Sender<String>) {
         let child = self.child_process.as_mut().expect("Child process not initialized");
-        let ctrl_c_requested = Arc::clone(&self.ctrl_c_requested);
+        let running_stdin = Arc::clone(&self.running);
+        let running_stdout = Arc::clone(&self.running);
 
         let mut stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
@@ -63,7 +64,12 @@ impl Terminal {
         // Stdin thread
         std::thread::spawn(move || {
             for input in stdin_rx {
-                writeln!(stdin, "{}", input).expect("Failed to write to stdin");
+                if !running_stdin.load(Ordering::SeqCst) {
+                    break;
+                }
+                if writeln!(stdin, "{}", input).is_err() {
+                    break;
+                }
             }
         });
 
@@ -71,11 +77,13 @@ impl Terminal {
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
-                if let Ok(line) = line {
-                    stdout_tx.send(line).expect("Failed to send output");
-                }
-                if *ctrl_c_requested.lock().unwrap() {
+                if !running_stdout.load(Ordering::SeqCst) {
                     break;
+                }
+                if let Ok(line) = line {
+                    if stdout_tx.send(line).is_err() {
+                        break;
+                    }
                 }
             }
         });
@@ -94,7 +102,7 @@ impl Terminal {
             ui.heading("Terminal");
 
             let current_dir = self.current_directory.lock().unwrap().clone();
-            ui.label(format!("Current Directory: {}", current_dir));
+            ui.label(format!("Current Directory: {}", current_dir.display()));
 
             let available_height = ui.available_height();
             egui::ScrollArea::vertical()
@@ -137,21 +145,23 @@ impl Terminal {
         self.output.clear();
     }
 
-    fn exit(&mut self) {
+    pub fn exit(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
         if let Some(mut child) = self.child_process.take() {
-            child.kill().expect("Failed to kill child process");
+            let _ = child.kill();
         }
         self.output.push("Terminal session ended.".to_string());
     }
 
-    fn ctrl_c(&mut self) {
-        *self.ctrl_c_requested.lock().unwrap() = true;
+    pub fn ctrl_c(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
         if let Some(child) = self.child_process.take() {
+            // Implement platform-specific interrupt here
             #[cfg(unix)]
             {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
-                kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("Failed to send SIGINT");
+                let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
             }
             #[cfg(windows)]
             {
@@ -165,6 +175,6 @@ impl Terminal {
             }
         }
         self.spawn_shell();
-        *self.ctrl_c_requested.lock().unwrap() = false;
+        self.running.store(true, Ordering::SeqCst);
     }
 }
