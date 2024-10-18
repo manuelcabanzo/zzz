@@ -37,10 +37,6 @@ impl ConsolePanel {
         self.terminal.exit();
     }
 
-    pub fn ctrl_c(&mut self) {
-        self.terminal.ctrl_c();
-    }
-    
     pub fn set_current_directory(&mut self, path: String) {
         let path_buf = PathBuf::from(path);
         *self.terminal.current_directory.lock().unwrap() = path_buf;

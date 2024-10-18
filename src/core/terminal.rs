@@ -5,7 +5,6 @@ use crossbeam_channel::{unbounded, Sender, Receiver};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 pub struct Terminal {
     pub current_directory: Arc<Mutex<PathBuf>>,
@@ -128,8 +127,8 @@ impl Terminal {
                 if ui.button("Exit").clicked() {
                     self.exit();
                 }
-                if ui.button("Ctrl+C").clicked() {
-                    self.ctrl_c();
+                if ui.button("Restart Shell").clicked() {
+                    self.restart_shell();
                 }
             });
         });
@@ -146,60 +145,24 @@ impl Terminal {
         self.output.clear();
     }
 
+    pub fn restart_shell(&mut self) {
+        self.exit();
+        self.spawn_shell();
+        let (stdin_tx, stdin_rx) = unbounded();
+        let (stdout_tx, stdout_rx) = unbounded();
+        self.stdin_tx = Some(stdin_tx);
+        self.stdout_rx = Some(stdout_rx);
+        self.start_io_threads(stdin_rx, stdout_tx);
+        self.running.store(true, Ordering::SeqCst);
+        self.output.push("New shell spawned.".to_string());
+    }
+    
     pub fn exit(&mut self) {
         self.running.store(false, Ordering::SeqCst);
         if let Some(mut child) = self.child_process.take() {
             let _ = child.kill();
+            let exit_status = child.wait().expect("Failed to wait on child");
+            self.output.push(format!("Shell exited with status: {:?}", exit_status));
         }
-        self.output.push("Terminal session ended.".to_string());
-    }
-
-    pub fn ctrl_c(&mut self) {
-        if let Some(mut child) = self.child_process.take() {
-            self.running.store(false, Ordering::SeqCst);
-            
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                
-                let pid = Pid::from_raw(child.id() as i32);
-                let _ = kill(pid, Signal::SIGINT);
-                
-                // Give the process a moment to handle the signal
-                std::thread::sleep(Duration::from_millis(100));
-                
-                // If it's still running, force kill
-                if kill(pid, Signal::SIGZERO).is_ok() {
-                    let _ = kill(pid, Signal::SIGKILL);
-                }
-            }
-            
-            #[cfg(windows)]
-            {
-                use winapi::um::processthreadsapi::TerminateProcess;
-                use winapi::um::wincon::CTRL_C_EVENT;
-                use winapi::um::wincon::GenerateConsoleCtrlEvent;
-                use std::os::windows::io::AsRawHandle;
-                
-                unsafe {
-                    // Send Ctrl+C event
-                    GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
-                    
-                    // Give the process a moment to handle the event
-                    std::thread::sleep(Duration::from_millis(100));
-                    
-                    // If it's still running, force terminate
-                    TerminateProcess(child.as_raw_handle() as *mut _, 1);
-                }
-            }
-
-            // Wait for the process to exit
-            let _ = child.wait();
-        }
-
-        self.output.push("Process terminated.".to_string());
-        self.spawn_shell();
-        self.running.store(true, Ordering::SeqCst);
     }
 }
