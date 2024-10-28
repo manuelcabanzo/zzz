@@ -10,6 +10,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use crate::components::emulator_panel::AppState;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -22,7 +23,8 @@ pub struct IDE {
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
     lsp_initialized: AtomicBool,
-    runtime: Arc<Runtime>, 
+    runtime: Arc<Runtime>,
+    app_state: Arc<AppState>,
 }
 
 impl IDE {
@@ -30,11 +32,13 @@ impl IDE {
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
 
+        let app_state = Arc::new(AppState::new());
+
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
             console_panel: ConsolePanel::new(),
-            emulator_panel: EmulatorPanel::new(),
+            emulator_panel: EmulatorPanel::new(Arc::clone(&app_state)),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,
             show_emulator_panel: false,
@@ -42,6 +46,7 @@ impl IDE {
             title: "ZZZ IDE".to_string(),
             lsp_initialized: AtomicBool::new(false),
             runtime,
+            app_state,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
@@ -184,9 +189,12 @@ impl IDE {
         
         self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
 
-        if self.show_emulator_panel {
-            self.emulator_panel.show(ctx);
-        }
+        egui::SidePanel::right("emulator_panel")
+            .resizable(true)
+            .default_width(250.0)
+            .show_animated(ctx, self.show_emulator_panel, |ui| {
+                self.emulator_panel.show(ui);
+            });
 
         if let Some(new_project_path) = self.file_modal.project_path.clone() {
             if self.console_panel.project_path.as_ref() != Some(&new_project_path) {
@@ -195,8 +203,8 @@ impl IDE {
         }
         
         egui::CentralPanel::default().show(ctx, |ui| {    
-            let available_height = 715.0; 
-            let console_height = 280.0; // Fixed console height
+            let available_height = 715.0;
+            let console_height = 280.0;
             let editor_height = if self.show_console_panel {
                 available_height - console_height
             } else {
@@ -208,13 +216,35 @@ impl IDE {
             if let Some(current_file) = &self.code_editor.current_file {
                 let code = self.code_editor.code.clone();
                 self.file_modal.notify_file_change(current_file, &code);
-            }      
+                
+                // Update app_state based on code changes
+                let mut background_color = self.app_state.background_color.lock().unwrap();
+                *background_color = if code.contains("background-color: red;") {
+                    Color32::RED
+                } else if code.contains("background-color: blue;") {
+                    Color32::BLUE
+                } else {
+                    Color32::WHITE
+                };
+                
+                // Update content
+                if let Some(content_start) = code.find("content: \"") {
+                    if let Some(content_end) = code[content_start + 9..].find("\"") {
+                        let new_content = code[content_start + 9..content_start + 9 + content_end].to_string();
+                        let mut content = self.app_state.content.lock().unwrap();
+                        *content = new_content;
+                    }
+                }
+            }  
         });
 
         if self.show_console_panel {
-            egui::TopBottomPanel::bottom("console_panel").resizable(false).exact_height(280.0).show(ctx, |ui| {
-                self.console_panel.show(ui);
-            });
+            egui::TopBottomPanel::bottom("console_panel")
+                .resizable(false)
+                .exact_height(280.0)
+                .show_animated(ctx, self.show_console_panel, |ui| {
+                    self.console_panel.show(ui);
+                });
         }
 
         self.settings_modal.show(ctx);
