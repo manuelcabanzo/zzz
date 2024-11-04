@@ -10,7 +10,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::PathBuf;
 use crate::components::emulator_panel::AppState;
 
 pub struct IDE {
@@ -178,52 +177,11 @@ impl IDE {
             a
         )
     }
-    
-    fn update_preview_from_code(&self, code: &str) {
-        let mut preview_state = self.app_state.preview_state.lock().unwrap();
-        
-        // Update background color
-        if let Some(color_start) = code.find("backgroundColor: '") {
-            if let Some(color_end) = code[color_start..].find("'") {
-                let color = &code[color_start + 16..color_start + color_end];
-                preview_state.background_color = parse_color(color);
-            }
-        }
 
-        // Update content
-        if let Some(text_start) = code.find("text: '") {
-            if let Some(text_end) = code[text_start..].find("'") {
-                preview_state.content = code[text_start + 7..text_start + text_end].to_string();
-            }
-        }
-    }
-    
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             self.custom_title_bar(ui);
         });
-        
-        if let Some(project_path) = &self.file_modal.project_path {
-            if self.app_state.metro_server.lock().unwrap().is_none() {
-                if let Err(e) = self.app_state.start_metro_server(project_path) {
-                    self.console_panel.log(&format!("Failed to start Metro server: {}", e));
-                } else {
-                    self.console_panel.log("Metro server started successfully");
-                }
-            }
-        }
-
-        // Update emulator when code changes
-        if let Some(current_file) = &self.code_editor.current_file {
-            // Convert String to PathBuf for extension checking
-            let path = PathBuf::from(current_file);
-            if let Some(extension) = path.extension() {
-                if extension == "js" || extension == "jsx" {
-                    let code = self.code_editor.code.clone();
-                    self.update_preview_from_code(&code);
-                }
-            }
-        }
         
         self.initialize_lsp();
         self.handle_keyboard_shortcuts(ctx);
@@ -259,9 +217,9 @@ impl IDE {
                 let code = self.code_editor.code.clone();
                 self.file_modal.notify_file_change(current_file, &code);
                 
-                // Update preview_state based on code changes
-                let mut preview_state = self.app_state.preview_state.lock().unwrap();
-                preview_state.background_color = if code.contains("background-color: red;") {
+                // Update app_state based on code changes
+                let mut background_color = self.app_state.background_color.lock().unwrap();
+                *background_color = if code.contains("background-color: red;") {
                     Color32::RED
                 } else if code.contains("background-color: blue;") {
                     Color32::BLUE
@@ -273,7 +231,8 @@ impl IDE {
                 if let Some(content_start) = code.find("content: \"") {
                     if let Some(content_end) = code[content_start + 9..].find("\"") {
                         let new_content = code[content_start + 9..content_start + 9 + content_end].to_string();
-                        preview_state.content = new_content;
+                        let mut content = self.app_state.content.lock().unwrap();
+                        *content = new_content;
                     }
                 }
             }  
@@ -289,15 +248,6 @@ impl IDE {
         }
 
         self.settings_modal.show(ctx);
-    }
-}
-
-fn parse_color(color: &str) -> Color32 {
-    match color {
-        "red" => Color32::RED,
-        "blue" => Color32::BLUE,
-        "green" => Color32::GREEN,
-        _ => Color32::WHITE,
     }
 }
 
