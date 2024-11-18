@@ -10,7 +10,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::components::emulator_panel::AppState;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -24,7 +23,6 @@ pub struct IDE {
     title: String,
     lsp_initialized: AtomicBool,
     runtime: Arc<Runtime>,
-    app_state: Arc<AppState>,
 }
 
 impl IDE {
@@ -32,13 +30,11 @@ impl IDE {
         let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
 
-        let app_state = Arc::new(AppState::new());
-
         let ide = Self {
             file_modal: FileModal::new(Arc::clone(&runtime)),
             code_editor: CodeEditor::new(Arc::clone(&runtime)),
             console_panel: ConsolePanel::new(),
-            emulator_panel: EmulatorPanel::new(Arc::clone(&app_state)),
+            emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
             show_console_panel: false,
             show_emulator_panel: false,
@@ -46,7 +42,6 @@ impl IDE {
             title: "ZZZ IDE".to_string(),
             lsp_initialized: AtomicBool::new(false),
             runtime,
-            app_state,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
@@ -216,25 +211,6 @@ impl IDE {
             if let Some(current_file) = &self.code_editor.current_file {
                 let code = self.code_editor.code.clone();
                 self.file_modal.notify_file_change(current_file, &code);
-                
-                // Update app_state based on code changes
-                let mut background_color = self.app_state.background_color.lock().unwrap();
-                *background_color = if code.contains("background-color: red;") {
-                    Color32::RED
-                } else if code.contains("background-color: blue;") {
-                    Color32::BLUE
-                } else {
-                    Color32::WHITE
-                };
-                
-                // Update content
-                if let Some(content_start) = code.find("content: \"") {
-                    if let Some(content_end) = code[content_start + 9..].find("\"") {
-                        let new_content = code[content_start + 9..content_start + 9 + content_end].to_string();
-                        let mut content = self.app_state.content.lock().unwrap();
-                        *content = new_content;
-                    }
-                }
             }  
         });
 

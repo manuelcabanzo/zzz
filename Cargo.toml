@@ -22,6 +22,7 @@ ctrlc = "3.4.5"
 nix = "0.29.0"
 winapi = { version = "0.3.9", features = ["processthreadsapi", "winnt", "wincon"] }
 reqwest = { version = "0.12.9", features = ["blocking"] }
+anyhow = "1.0.93"
 
 [lib]
 name = "zzz"
