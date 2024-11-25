@@ -307,29 +307,36 @@ impl EmulatorPanel {
 
     fn run_app_with_mirror(&mut self) {
         self.check_device_connection();
-        
+    
         if !self.device_connected {
             self.last_build_status = Some("No device connected".to_string());
             return;
         }
-
+    
         if self.project_path.is_none() {
             self.last_build_status = Some("Please select an Android project directory first".to_string());
             return;
         }
-
+    
+        // Start screen mirroring immediately
+        if !self.scrcpy_running {
+            self.start_scrcpy();
+            if !self.scrcpy_running {
+                self.last_build_status = Some("Failed to start screen mirroring. Continuing with app deployment.".to_string());
+            }
+        }
+    
         // Create thread-safe status for async operations
         let runtime_handle = self.runtime.handle().clone();
         let project_path = self.project_path.clone();
         let package_name = self.app_package_name.clone();
         let activity_name = self.app_activity_name.clone();
         let build_status = Arc::new(Mutex::new(String::new()));
-        let status_clone = build_status.clone();
-
+    
         // Run build and deployment in async task
         runtime_handle.spawn(async move {
             let mut status = build_status.lock().unwrap();
-            
+    
             // Build app
             *status = "Building app...".to_string();
             match Self::build_app(&project_path) {
@@ -344,24 +351,17 @@ impl EmulatorPanel {
                                 Ok(msg) => *status = msg,
                                 Err(e) => *status = format!("Launch failed: {}", e),
                             }
-                        },
+                        }
                         Err(e) => *status = format!("Installation failed: {}", e),
                     }
-                },
+                }
                 Err(e) => *status = format!("Build failed: {}", e),
             }
         });
-
-        // Update build status after async operation
-        if let Ok(status) = status_clone.lock() {
-            self.last_build_status = Some(status.clone());
-        }
-
-        // Start screen mirroring only after successful deployment
-        if self.last_build_status.as_ref().map_or(false, |s| s.contains("successful")) {
-            self.start_scrcpy();
-        }
-    }
+    
+        // Set initial status
+        self.last_build_status = Some("Deployment initiated. Screen mirroring started.".to_string());
+    }    
 
     pub fn show(&mut self, ui: &mut Ui) {
         ui.heading("App Runner");
