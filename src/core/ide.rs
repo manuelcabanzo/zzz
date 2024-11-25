@@ -197,23 +197,30 @@ impl IDE {
                 self.console_panel.set_project_path(new_project_path);
             }
         }
-        
-        egui::CentralPanel::default().show(ctx, |ui| {    
-            let available_height = 715.0;
-            let console_height = 280.0;
+                       
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let available_height = 760.0; // Total available height for the central panel
+            let console_height = 280.0;  // Height of the console panel
             let editor_height = if self.show_console_panel {
                 available_height - console_height
             } else {
                 available_height
             };
-            
-            self.code_editor.show(ui, editor_height);
-
+        
+            // Set a fixed height for the editor panel
+            egui::ScrollArea::vertical()
+                .max_height(editor_height)
+                .show(ui, |ui| {
+                    ui.set_height(editor_height); // Ensures the editor panel height is fixed
+                    self.code_editor.show(ui, editor_height); // Render the code editor
+                });
+        
+            // Notify about file changes
             if let Some(current_file) = &self.code_editor.current_file {
                 let code = self.code_editor.code.clone();
                 self.file_modal.notify_file_change(current_file, &code);
-            }  
-        });
+            }
+        });        
 
         if self.show_console_panel {
             egui::TopBottomPanel::bottom("console_panel")

@@ -24,8 +24,8 @@ impl EmulatorPanel {
             project_path: None,
             last_build_status: None,
             runtime: Runtime::new().expect("Failed to create Tokio runtime"),
-            app_package_name: String::from("com.example.myapp"),
-            app_activity_name: String::from(".MainActivity"),
+            app_package_name: String::new(),
+            app_activity_name: String::new(),
         }
     }
 
@@ -79,14 +79,95 @@ impl EmulatorPanel {
             return;
         }
     
-        // If all checks pass
-        self.project_path = Some(path);
-        self.last_build_status = Some("Project path set successfully".to_string());
+        self.project_path = Some(path.clone());
+        // Try to get info from manifest first
+        if let Some((package_name, activity_name)) = self.extract_manifest_info() {
+            self.app_package_name = package_name;
+            self.app_activity_name = activity_name;
+            self.last_build_status = Some(format!(
+                "Project configured. Package: {}, Activity: {}", 
+                self.app_package_name, 
+                self.app_activity_name
+            ));
+        } else {
+            // Fallback to gradle file
+            if let Some(package_name) = self.extract_package_from_gradle() {
+                self.app_package_name = package_name.clone();
+                // For activity, we'll assume .MainActivity but warn the user
+                self.app_activity_name = format!("{}.MainActivity", package_name);
+                self.last_build_status = Some(
+                    "Package name found in gradle, but please verify the activity name is correct."
+                    .to_string()
+                );
+            } else {
+                self.last_build_status = Some(
+                    "Could not detect package info. Please configure manually."
+                    .to_string()
+                );
+            }
+        }
     }
 
     pub fn configure_app(&mut self, package_name: String, activity_name: String) {
         self.app_package_name = package_name;
         self.app_activity_name = activity_name;
+    }
+
+    fn extract_package_from_gradle(&self) -> Option<String> {
+        if let Some(path) = &self.project_path {
+            let build_gradle_path = path.join("app/build.gradle");
+            let build_gradle_kts_path = path.join("app/build.gradle.kts");
+            
+            // Try reading from build.gradle or build.gradle.kts
+            let content = std::fs::read_to_string(&build_gradle_path)
+                .or_else(|_| std::fs::read_to_string(&build_gradle_kts_path))
+                .ok()?;
+
+            // Look for applicationId or namespace in build.gradle
+            for line in content.lines() {
+                if line.contains("applicationId") || line.contains("namespace") {
+                    return line.split("\"")
+                        .nth(1)
+                        .map(|s| s.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_manifest_info(&self) -> Option<(String, String)> {
+        if let Some(path) = &self.project_path {
+            let manifest_path = path.join("app/src/main/AndroidManifest.xml");
+            
+            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                // Very basic XML parsing - in production you'd want to use a proper XML parser
+                let mut package_name = String::new();
+                let mut activity_name = String::new();
+
+                // Try to find package name
+                if let Some(pkg_start) = content.find("package=\"") {
+                    if let Some(pkg_end) = content[pkg_start + 9..].find('\"') {
+                        package_name = content[pkg_start + 9..pkg_start + 9 + pkg_end].to_string();
+                    }
+                }
+
+                // Try to find main activity
+                if let Some(activity_start) = content.find("android:name=\"") {
+                    if let Some(activity_end) = content[activity_start + 13..].find('\"') {
+                        activity_name = content[activity_start + 13..activity_start + 13 + activity_end].to_string();
+                        // If activity starts with a dot, it's relative to package
+                        if activity_name.starts_with('.') {
+                            activity_name = format!("{}{}", package_name, activity_name);
+                        }
+                    }
+                }
+
+                if !package_name.is_empty() && !activity_name.is_empty() {
+                    return Some((package_name, activity_name));
+                }
+            }
+        }
+        None
     }
 
     fn check_device_connection(&mut self) {
