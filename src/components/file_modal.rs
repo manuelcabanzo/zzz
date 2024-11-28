@@ -370,8 +370,11 @@ impl FileModal {
                     return;
                 }
                 self.project_path = Some(folder_path.clone());
+                
+                // Create FileSystem with clone method
                 let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
                 self.file_system = Some(fs.clone());
+                
                 self.expanded_folders.clear();
                 self.expanded_folders.insert(folder_path.clone());
                 log(&format!("Opened project: {}", folder_path.display()));
@@ -433,7 +436,11 @@ impl FileModal {
             if let Some(fs) = &self.file_system {
                 let path = Path::new(file);
                 match fs.save_file(path, code) {
-                    Ok(_) => log(&format!("Saved file: {}", file)),
+                    Ok(_) => {
+                        log(&format!("Saved file: {}", file));
+                        // Notify LSP about file change
+                        self.notify_file_change(file, code);
+                    },
                     Err(e) => log(&format!("Error saving file {}: {}", file, e)),
                 }
             }
@@ -442,4 +449,3 @@ impl FileModal {
         }
     }
 }
-
