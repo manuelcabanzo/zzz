@@ -29,8 +29,7 @@ impl ConsolePanel {
     }
 
     pub fn log(&mut self, message: &str) {
-        // We'll keep this method for backwards compatibility
-        self.terminal.output.push(message.to_string());
+        self.terminal.add_output(message.to_string());
     }
 
     pub fn exit(&mut self) {

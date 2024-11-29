@@ -5899,6 +5899,7 @@ dependencies = [
  "lsp-types",
  "nix 0.29.0",
  "notify",
+ "regex",
  "reqwest",
  "rfd",
  "serde",
