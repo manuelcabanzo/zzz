@@ -26,7 +26,7 @@ impl Theme {
             text_color: Color32::from_rgb(60, 60, 60),
             accent_color: Color32::from_rgb(0, 122, 204),
             secondary_color: Color32::from_rgb(180, 180, 180),
-            font_family: "Monaspace Neon".to_string(),
+            font_family: "Caskaydia Cove Nerd Font Mono".to_string(),
             font_size: 14.0,
             extreme_bg_color: Color32::from_rgb(30, 30, 30),
             panel_fill: Color32::from_rgb(230, 230, 230),
@@ -51,7 +51,7 @@ impl Theme {
             text_color: Color32::from_rgb(255, 255, 255),
             accent_color: Color32::from_rgb(0, 122, 204),
             secondary_color: Color32::from_rgb(80, 80, 80),
-            font_family: "Monaspace Neon".to_string(),
+            font_family: "Caskaydia Cove Nerd Font Mono".to_string(),
             font_size: 14.0,
             extreme_bg_color: Color32::from_rgb(20, 20, 20),
             panel_fill: Color32::from_rgb(40, 40, 50),
@@ -76,7 +76,7 @@ impl Theme {
             text_color: Color32::from_rgb(25, 25, 112),
             accent_color: Color32::from_rgb(255, 105, 180),
             secondary_color: Color32::from_rgb(180, 180, 220),
-            font_family: "Monaspace Neon".to_string(),
+            font_family: "Caskaydia Cove Nerd Font Mono".to_string(),
             font_size: 14.0,
             extreme_bg_color: Color32::from_rgb(30, 30, 30),
             panel_fill: Color32::from_rgb(220, 220, 240),
@@ -135,7 +135,7 @@ pub fn custom_theme(ctx: &egui::Context, theme: &Theme) -> egui::Visuals {
         ..Default::default()
     });
 
-    let font_data = FontData::from_static(include_bytes!("../resources/MonaspaceNeon-Regular.otf"));
+    let font_data = FontData::from_static(include_bytes!("../resources/CaskaydiaCoveNerdFontMono-Regular.ttf"));
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(theme.font_family.clone(), font_data);
     fonts.families

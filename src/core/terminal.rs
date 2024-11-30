@@ -122,15 +122,23 @@ impl Terminal {
         });
     }
 
-    fn parse_and_style_output(&self, line: String) -> TerminalLine {
+    fn parse_and_style_output(&mut self, line: String) -> TerminalLine {
         // Detect and style different types of output
         let style = match true {
             _ if line.contains("ERROR:") => LineStyle::Error,
             _ if line.contains("warning") => LineStyle::Warning,
-            _ if line.starts_with("$") => LineStyle::Command,
+            _ if line.starts_with("$ ") => {
+                // If the line starts with "$ ", strip it for display but keep Command style
+                let stripped_line = line.trim_start_matches("$ ").to_string();
+                self.output.push(TerminalLine {
+                    text: stripped_line.clone(),
+                    style: LineStyle::Command
+                });
+                LineStyle::Default // Prevent duplicate command line
+            },
             _ => self.detect_links_and_highlight(&line)
         };
-
+    
         TerminalLine { text: line, style }
     }
 
@@ -350,22 +358,17 @@ impl Terminal {
     
     fn execute_command(&mut self) {
         if self.input.is_empty() { return; }
-
+    
         // Add to command history
         self.command_history.push(self.input.clone());
         self.history_index = None;
-
-        // Log the command
-        self.output.push(TerminalLine {
-            text: format!("$ {}", self.input),
-            style: LineStyle::Command
-        });
-
+    
         // Send command to shell
         if let Some(tx) = &self.stdin_tx {
+            // Modify the input to prefix with "$ " so parse_and_style_output can detect it
             tx.send(self.input.clone()).expect("Failed to send input");
         }
-
+    
         self.input.clear();
         self.auto_complete_suggestions.clear();
     }
