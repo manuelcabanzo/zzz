@@ -34,6 +34,7 @@ pub struct Terminal {
     command_history: Vec<String>,
     history_index: Option<usize>,
     child_process: Option<Child>,
+    current_subprocess: Option<Child>,
     stdin_tx: Option<Sender<String>>,
     stdout_rx: Option<Receiver<String>>,
     running: Arc<AtomicBool>,
@@ -57,6 +58,7 @@ impl Terminal {
             command_history: Vec::new(),
             history_index: None,
             child_process: None,
+            current_subprocess: None,
             stdin_tx: Some(stdin_tx),
             stdout_rx: Some(stdout_rx),
             running: Arc::clone(&running),
@@ -67,7 +69,6 @@ impl Terminal {
 
         terminal.spawn_shell();
         terminal.start_io_threads(stdin_rx, stdout_tx);
-
         terminal
     }
 
@@ -75,7 +76,7 @@ impl Terminal {
         let mut cmd = if cfg!(target_os = "windows") {
             Command::new("cmd")
         } else {
-            Command::new("sh")
+            Command::new("/bin/bash")
         };
 
         cmd.current_dir(self.current_directory.lock().unwrap().clone())
@@ -93,6 +94,7 @@ impl Terminal {
 
         let mut stdin = child.stdin.take().expect("Failed to open stdin");
         let stdout = child.stdout.take().expect("Failed to open stdout");
+        let stderr = child.stderr.take().expect("Failed to open stderr");
 
         // Stdin thread
         std::thread::spawn(move || {
@@ -106,40 +108,147 @@ impl Terminal {
             }
         });
 
-        // Stdout thread
+        // Stdout and Stderr thread
         std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
+            let stdout_reader = BufReader::new(stdout);
+            let stderr_reader = BufReader::new(stderr);
+
+            let combined_reader = stdout_reader.lines()
+                .chain(stderr_reader.lines())
+                .filter_map(Result::ok);
+
+            for line in combined_reader {
                 if !running_stdout.load(Ordering::SeqCst) {
                     break;
                 }
-                if let Ok(line) = line {
-                    if stdout_tx.send(line).is_err() {
-                        break;
-                    }
+                if stdout_tx.send(line).is_err() {
+                    break;
                 }
             }
         });
     }
 
-    fn parse_and_style_output(&mut self, line: String) -> TerminalLine {
-        // Detect and style different types of output
-        let style = match true {
-            _ if line.contains("ERROR:") => LineStyle::Error,
-            _ if line.contains("warning") => LineStyle::Warning,
-            _ if line.starts_with("$ ") => {
-                // If the line starts with "$ ", strip it for display but keep Command style
-                let stripped_line = line.trim_start_matches("$ ").to_string();
+    pub fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::C) && i.modifiers.ctrl {
+                self.send_interrupt();
+            }
+        });
+    }
+
+    pub fn send_interrupt(&mut self) {
+        // Send SIGINT (Ctrl+C) to current subprocess or active process
+        if let Some(subprocess) = &mut self.current_subprocess {
+            let _ = subprocess.kill();
+            self.current_subprocess = None;
+            self.output.push(TerminalLine {
+                text: "Process interrupted".to_string(),
+                style: LineStyle::Warning
+            });
+        }
+
+        // Send interrupt to shell
+        if let Some(child) = &mut self.child_process {
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                let _ = kill(Pid::from_raw(child.id() as i32), Some(Signal::SIGINT));
+            }
+
+            #[cfg(windows)]
+            {
+                use winapi::um::wincon::GenerateConsoleCtrlEvent;
+                use winapi::um::wincon::CTRL_C_EVENT;
+                let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, child.id()) };
+            }
+        }
+    }
+
+    fn execute_command(&mut self) {
+        if self.input.is_empty() { return; }
+    
+        // Clone essential data to avoid borrowing conflicts
+        let input = self.input.clone();
+        let current_dir = self.current_directory.lock().unwrap().clone();
+    
+        // Add to command history
+        self.command_history.push(input.clone());
+        self.history_index = None;
+    
+        // Parse input
+        let parts: Vec<&str> = input.split_whitespace().collect();
+    
+        // Handle specific commands
+        match parts[0] {
+            "cd" => {
+                if parts.len() > 1 {
+                    // Create a new path based on current directory
+                    let new_path = if parts[1].starts_with('/') || parts[1].contains(':') {
+                        // Absolute path
+                        PathBuf::from(parts[1])
+                    } else {
+                        // Relative path
+                        current_dir.join(parts[1])
+                    };
+    
+                    match new_path.canonicalize() {
+                        Ok(canonical_path) => {
+                            // Update current directory
+                            *self.current_directory.lock().unwrap() = canonical_path.clone();
+                            
+                            self.output.push(TerminalLine {
+                                text: format!("Changed directory to: {}", canonical_path.display()),
+                                style: LineStyle::Success
+                            });
+    
+                            // Send cd command to shell to ensure shell's working directory is updated
+                            if let Some(tx) = &self.stdin_tx {
+                                let _ = tx.send(format!("cd \"{}\"", canonical_path.display()));
+                            }
+                        }
+                        Err(e) => {
+                            self.output.push(TerminalLine {
+                                text: format!("Error changing directory: {}", e),
+                                style: LineStyle::Error
+                            });
+                        }
+                    }
+                } else {
+                    self.output.push(TerminalLine {
+                        text: "Usage: cd <directory>".to_string(),
+                        style: LineStyle::Warning
+                    });
+                }
+            }
+            "clear" => {
+                self.clear();
+            }
+            "exit" => {
+                self.exit();
+            }
+            _ => {
+                // Add command to output
                 self.output.push(TerminalLine {
-                    text: stripped_line.clone(),
+                    text: format!("$ {}", input),
                     style: LineStyle::Command
                 });
-                LineStyle::Default // Prevent duplicate command line
-            },
-            _ => self.detect_links_and_highlight(&line)
-        };
     
-        TerminalLine { text: line, style }
+                // Send command to shell
+                if let Some(tx) = &self.stdin_tx {
+                    if tx.send(input.clone()).is_err() {
+                        self.output.push(TerminalLine {
+                            text: "Failed to send command to shell".to_string(),
+                            style: LineStyle::Error
+                        });
+                    }
+                }
+            }
+        }
+    
+        // Clear input and suggestions
+        self.input.clear();
+        self.auto_complete_suggestions.clear();
     }
 
     fn detect_links_and_highlight(&self, line: &str) -> LineStyle {
@@ -169,7 +278,6 @@ impl Terminal {
     }
 
     fn guess_syntax(&self, line: &str) -> Option<&SyntaxReference> {
-        // Guess syntax based on file extensions or content
         if line.contains(".rs") {
             self.syntax_set.find_syntax_by_extension("rs")
         } else if line.contains(".py") {
@@ -177,6 +285,64 @@ impl Terminal {
         } else {
             None
         }
+    }
+
+    fn clear(&mut self) {
+        self.output.clear();
+        self.output.push(TerminalLine {
+            text: "Terminal cleared".to_string(),
+            style: LineStyle::Success
+        });
+    }
+
+    pub fn exit(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        
+        // Kill current subprocess if exists
+        if let Some(mut subprocess) = self.current_subprocess.take() {
+            let _ = subprocess.kill();
+        }
+
+        // Exit main shell process
+        if let Some(mut child) = self.child_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        // Restart shell
+        self.spawn_shell();
+        let (stdin_tx, stdin_rx) = unbounded();
+        let (stdout_tx, stdout_rx) = unbounded();
+        self.stdin_tx = Some(stdin_tx);
+        self.stdout_rx = Some(stdout_rx);
+        self.start_io_threads(stdin_rx, stdout_tx);
+        self.running.store(true, Ordering::SeqCst);
+        
+        self.output.push(TerminalLine {
+            text: "Shell restarted".to_string(),
+            style: LineStyle::Success
+        });
+    }
+
+
+    fn parse_and_style_output(&mut self, line: String) -> TerminalLine {
+        // Detect and style different types of output
+        let style = match true {
+            _ if line.contains("ERROR:") => LineStyle::Error,
+            _ if line.contains("warning") => LineStyle::Warning,
+            _ if line.starts_with("$ ") => {
+                // If the line starts with "$ ", strip it for display but keep Command style
+                let stripped_line = line.trim_start_matches("$ ").to_string();
+                self.output.push(TerminalLine {
+                    text: stripped_line.clone(),
+                    style: LineStyle::Command
+                });
+                LineStyle::Default // Prevent duplicate command line
+            },
+            _ => self.detect_links_and_highlight(&line)
+        };
+    
+        TerminalLine { text: line, style }
     }
 
     pub fn update(&mut self) {
@@ -355,27 +521,6 @@ impl Terminal {
             style: LineStyle::Default
         });
     }
-    
-    fn execute_command(&mut self) {
-        if self.input.is_empty() { return; }
-    
-        // Add to command history
-        self.command_history.push(self.input.clone());
-        self.history_index = None;
-    
-        // Send command to shell
-        if let Some(tx) = &self.stdin_tx {
-            // Modify the input to prefix with "$ " so parse_and_style_output can detect it
-            tx.send(self.input.clone()).expect("Failed to send input");
-        }
-    
-        self.input.clear();
-        self.auto_complete_suggestions.clear();
-    }
-
-    fn clear(&mut self) {
-        self.output.clear();
-    }
 
     pub fn restart_shell(&mut self) {
         self.exit();
@@ -390,17 +535,5 @@ impl Terminal {
             text: "New shell spawned.".to_string(),
             style: LineStyle::Success
         });
-    }
-    
-    pub fn exit(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
-        if let Some(mut child) = self.child_process.take() {
-            let _ = child.kill();
-            let exit_status = child.wait().expect("Failed to wait on child");
-            self.output.push(TerminalLine {
-                text: format!("Shell exited with status: {:?}", exit_status),
-                style: LineStyle::Warning
-            });
-        }
     }
 }

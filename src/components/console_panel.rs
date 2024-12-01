@@ -1,5 +1,6 @@
 use crate::core::terminal::Terminal;
 use std::path::PathBuf;
+use eframe::egui;
 
 pub struct ConsolePanel {
     terminal: Terminal,
@@ -24,8 +25,9 @@ impl ConsolePanel {
         self.terminal.show(ui);
     }
 
-    pub fn update(&mut self) {
+    pub fn update(&mut self, ctx: &egui::Context) {
         self.terminal.update();
+        self.terminal.handle_keyboard_shortcuts(ctx);
     }
 
     pub fn log(&mut self, message: &str) {
@@ -34,6 +36,10 @@ impl ConsolePanel {
 
     pub fn exit(&mut self) {
         self.terminal.exit();
+    }
+
+    pub fn send_interrupt(&mut self) {
+        self.terminal.send_interrupt();
     }
 
     pub fn set_current_directory(&mut self, path: String) {
