@@ -34,7 +34,6 @@ pub struct Terminal {
     command_history: Vec<String>,
     history_index: Option<usize>,
     child_process: Option<Child>,
-    current_subprocess: Option<Child>,
     stdin_tx: Option<Sender<String>>,
     stdout_rx: Option<Receiver<String>>,
     running: Arc<AtomicBool>,
@@ -58,7 +57,6 @@ impl Terminal {
             command_history: Vec::new(),
             history_index: None,
             child_process: None,
-            current_subprocess: None,
             stdin_tx: Some(stdin_tx),
             stdout_rx: Some(stdout_rx),
             running: Arc::clone(&running),
@@ -137,32 +135,37 @@ impl Terminal {
     }
 
     pub fn send_interrupt(&mut self) {
-        // Send SIGINT (Ctrl+C) to current subprocess or active process
-        if let Some(subprocess) = &mut self.current_subprocess {
-            let _ = subprocess.kill();
-            self.current_subprocess = None;
-            self.output.push(TerminalLine {
-                text: "Process interrupted".to_string(),
-                style: LineStyle::Warning
-            });
-        }
-
-        // Send interrupt to shell
+        // Send interrupt signal to the current process
         if let Some(child) = &mut self.child_process {
+            // Use standard input to send interrupt
+            if let Some(mut stdin) = child.stdin.take() {
+                // Send Ctrl+C equivalent
+                let _ = stdin.write_all(&[3]); // ASCII code for Ctrl+C
+                let _ = stdin.flush();
+            }
+
+            // Attempt to send interrupt through system-level mechanisms
             #[cfg(unix)]
             {
                 use nix::sys::signal::{kill, Signal};
                 use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(child.id() as i32), Some(Signal::SIGINT));
+                
+                let pid = child.id() as i32;
+                let _ = kill(Pid::from_raw(pid), Some(Signal::SIGINT));
             }
 
             #[cfg(windows)]
             {
                 use winapi::um::wincon::GenerateConsoleCtrlEvent;
-                use winapi::um::wincon::CTRL_C_EVENT;
-                let _ = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, child.id()) };
+                let _ = unsafe { GenerateConsoleCtrlEvent(0, child.id()) };
             }
         }
+
+        // Add interrupt log
+        self.output.push(TerminalLine {
+            text: "Interrupt signal sent".to_string(),
+            style: LineStyle::Warning
+        });
     }
 
     fn execute_command(&mut self) {
@@ -296,34 +299,33 @@ impl Terminal {
     }
 
     pub fn exit(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
-        
-        // Kill current subprocess if exists
-        if let Some(mut subprocess) = self.current_subprocess.take() {
-            let _ = subprocess.kill();
-        }
-
-        // Exit main shell process
         if let Some(mut child) = self.child_process.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                
+                if let Ok(pid) = Pid::from_raw(child.id() as _) {
+                    // Specifically target child process without affecting parent
+                    let _ = kill(pid, Some(Signal::SIGINT));
+                }
+            }
+    
+            #[cfg(windows)]
+            {
+                use std::process::Command;
+                
+                // Use taskkill to target specific process
+                Command::new("taskkill")
+                    .args(&["/F", "/T", "/PID", &child.id().to_string()])
+                    .output()
+                    .ok();
+            }
+    
+            // Non-blocking wait
+            let _ = child.try_wait();
         }
-
-        // Restart shell
-        self.spawn_shell();
-        let (stdin_tx, stdin_rx) = unbounded();
-        let (stdout_tx, stdout_rx) = unbounded();
-        self.stdin_tx = Some(stdin_tx);
-        self.stdout_rx = Some(stdout_rx);
-        self.start_io_threads(stdin_rx, stdout_tx);
-        self.running.store(true, Ordering::SeqCst);
-        
-        self.output.push(TerminalLine {
-            text: "Shell restarted".to_string(),
-            style: LineStyle::Success
-        });
     }
-
 
     fn parse_and_style_output(&mut self, line: String) -> TerminalLine {
         // Detect and style different types of output
@@ -522,17 +524,31 @@ impl Terminal {
         });
     }
 
-    pub fn restart_shell(&mut self) {
+    fn restart_shell(&mut self) {
+        // Ensure previous processes are fully terminated
         self.exit();
-        self.spawn_shell();
+    
+        // Reset running state
+        self.running = Arc::new(AtomicBool::new(true));
+    
+        // Reset current directory
+        self.current_directory = Arc::new(Mutex::new(
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+        ));
+    
+        // Recreate communication channels
         let (stdin_tx, stdin_rx) = unbounded();
         let (stdout_tx, stdout_rx) = unbounded();
+    
+        // Spawn new shell and start IO threads
+        self.spawn_shell();
         self.stdin_tx = Some(stdin_tx);
         self.stdout_rx = Some(stdout_rx);
         self.start_io_threads(stdin_rx, stdout_tx);
-        self.running.store(true, Ordering::SeqCst);
+    
+        // Log restart
         self.output.push(TerminalLine {
-            text: "New shell spawned.".to_string(),
+            text: "Shell restarted successfully".to_string(),
             style: LineStyle::Success
         });
     }
