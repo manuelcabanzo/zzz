@@ -297,33 +297,83 @@ impl Terminal {
             style: LineStyle::Success
         });
     }
-
+    
     pub fn exit(&mut self) {
+        // Log start of exit process
+        self.output.push(TerminalLine {
+            text: "Attempting to terminate shell process...".to_string(),
+            style: LineStyle::Warning
+        });
+    
         if let Some(mut child) = self.child_process.take() {
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                
-                if let Ok(pid) = Pid::from_raw(child.id() as _) {
-                    // Specifically target child process without affecting parent
-                    let _ = kill(pid, Some(Signal::SIGINT));
+            // Stop the running flag to halt IO threads
+            self.running.store(false, Ordering::SeqCst);
+    
+            let termination_result = match std::env::consts::OS {
+                #[cfg(unix)]
+                _ => {
+                    use nix::sys::signal::{kill, Signal};
+                    use nix::unistd::Pid;
+                    
+                    let pid = child.id() as i32;
+                    let kill_result = kill(Pid::from_raw(pid), Some(Signal::SIGKILL));
+                    
+                    match kill_result {
+                        Ok(_) => "Process terminated successfully".to_string(),
+                        Err(e) => format!("Error terminating process: {}", e)
+                    }
+                },
+                #[cfg(windows)]
+                _ => {
+                    use std::process::Command;
+                    
+                    let kill_result = Command::new("taskkill")
+                        .args(&["/F", "/T", "/PID", &child.id().to_string()])
+                        .output();
+                    
+                    match kill_result {
+                        Ok(output) if output.status.success() => 
+                            "Process terminated successfully".to_string(),
+                        Ok(output) => 
+                            format!("Termination failed: {}", String::from_utf8_lossy(&output.stderr)),
+                        Err(e) => 
+                            format!("Error terminating process: {}", e)
+                    }
+                }
+            };
+    
+            // Log termination result
+            self.output.push(TerminalLine {
+                text: termination_result,
+                style: LineStyle::Warning
+            });
+    
+            // Non-blocking wait with error handling
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.output.push(TerminalLine {
+                        text: format!("Process exited with status: {}", status),
+                        style: LineStyle::Warning
+                    });
+                },
+                Ok(None) => {
+                    self.output.push(TerminalLine {
+                        text: "Process is still running".to_string(),
+                        style: LineStyle::Warning
+                    });
+                },
+                Err(e) => {
+                    self.output.push(TerminalLine {
+                        text: format!("Error waiting for process: {}", e),
+                        style: LineStyle::Error
+                    });
                 }
             }
-    
-            #[cfg(windows)]
-            {
-                use std::process::Command;
-                
-                // Use taskkill to target specific process
-                Command::new("taskkill")
-                    .args(&["/F", "/T", "/PID", &child.id().to_string()])
-                    .output()
-                    .ok();
-            }
-    
-            // Non-blocking wait
-            let _ = child.try_wait();
+        } else {
+            self.output.push(TerminalLine {
+                text: "No active child process to terminate".to_string(),
+                style: LineStyle::Warning
+            });
         }
     }
 
@@ -531,24 +581,38 @@ impl Terminal {
         // Reset running state
         self.running = Arc::new(AtomicBool::new(true));
     
-        // Reset current directory
-        self.current_directory = Arc::new(Mutex::new(
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
-        ));
+        // Get the current project path (portfolio)
+        let current_project_path = self.current_directory.lock().unwrap().clone();
+    
+        // Reset current directory to the current project path
+        self.current_directory = Arc::new(Mutex::new(current_project_path.clone()));
     
         // Recreate communication channels
         let (stdin_tx, stdin_rx) = unbounded();
         let (stdout_tx, stdout_rx) = unbounded();
     
         // Spawn new shell and start IO threads
-        self.spawn_shell();
+        let mut cmd = if cfg!(target_os = "windows") {
+            Command::new("cmd")
+        } else {
+            Command::new("/bin/bash")
+        };
+    
+        cmd.current_dir(current_project_path.clone())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+    
+        let child_process = cmd.spawn().expect("Failed to spawn shell");
+        
+        self.child_process = Some(child_process);
         self.stdin_tx = Some(stdin_tx);
         self.stdout_rx = Some(stdout_rx);
         self.start_io_threads(stdin_rx, stdout_tx);
     
-        // Log restart
+        // Log restart with current project path
         self.output.push(TerminalLine {
-            text: "Shell restarted successfully".to_string(),
+            text: format!("Shell restarted successfully in: {}", current_project_path.display()),
             style: LineStyle::Success
         });
     }
