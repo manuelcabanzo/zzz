@@ -6,10 +6,7 @@ use crate::components::{
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
 };
-use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct IDE {
     file_modal: FileModal,
@@ -21,18 +18,15 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    lsp_initialized: AtomicBool,
-    runtime: Arc<Runtime>,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
 
         let ide = Self {
-            file_modal: FileModal::new(Arc::clone(&runtime)),
-            code_editor: CodeEditor::new(Arc::clone(&runtime)),
+            file_modal: FileModal::new(),
+            code_editor: CodeEditor::new(),
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
@@ -40,8 +34,6 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_initialized: AtomicBool::new(false),
-            runtime,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
@@ -67,17 +59,6 @@ impl IDE {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
         });
-    }
-
-    fn initialize_lsp(&self) {
-        if self.lsp_initialized.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
-            let runtime_clone = Arc::clone(&self.runtime);
-            std::thread::spawn(move || {
-                runtime_clone.block_on(async {
-                    crate::core::lsp_server::start_lsp_server().await;
-                });
-            });
-        }
     }
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
@@ -178,7 +159,6 @@ impl IDE {
             self.custom_title_bar(ui);
         });
         
-        self.initialize_lsp();
         self.handle_keyboard_shortcuts(ctx);
         self.console_panel.update(ctx);
         
@@ -212,14 +192,9 @@ impl IDE {
                 .max_height(editor_height)
                 .show(ui, |ui| {
                     ui.set_height(editor_height); // Ensures the editor panel height is fixed
-                    self.code_editor.show(ui, editor_height); // Render the code editor
+                    self.code_editor.show(ui, available_height); // Render the code editor
                 });
         
-            // Notify about file changes
-            if let Some(current_file) = &self.code_editor.current_file {
-                let code = self.code_editor.code.clone();
-                self.file_modal.notify_file_change(current_file, &code);
-            }
         });        
 
         if self.show_console_panel {

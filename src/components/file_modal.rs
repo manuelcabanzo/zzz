@@ -3,19 +3,8 @@ use std::path::{PathBuf, Path};
 use std::rc::Rc;
 use std::collections::HashSet;
 use rfd::FileDialog;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::file_system::FileSystem;
-use crate::core::lsp_client::LspClient;
-use lsp_types::{
-    InitializeParams, 
-    ClientCapabilities, 
-    Url, 
-    DidChangeTextDocumentParams, 
-    VersionedTextDocumentIdentifier, 
-    TextDocumentContentChangeEvent
-};
-use tokio::runtime::Runtime;
 
 pub struct FileModal {
     pub show: bool,
@@ -28,8 +17,6 @@ pub struct FileModal {
     creating_item: Option<(PathBuf, String, bool)>,
     context_menu: Option<ContextMenuState>,
     new_item_focus: bool,
-    lsp_client: Option<Arc<LspClient>>,
-    runtime: Arc<Runtime>,
     is_initializing: AtomicBool,
 }
 
@@ -40,7 +27,7 @@ struct ContextMenuState {
 }
 
 impl FileModal {
-    pub fn new(runtime: Arc<Runtime>) -> Self {
+    pub fn new() -> Self {
         Self {
             show: false,
             file_system: None,
@@ -52,8 +39,6 @@ impl FileModal {
             creating_item: None,
             context_menu: None,
             new_item_focus: false,
-            lsp_client: None,
-            runtime,
             is_initializing: AtomicBool::new(false),
         }
     }
@@ -379,58 +364,12 @@ impl FileModal {
                 self.expanded_folders.insert(folder_path.clone());
                 log(&format!("Opened project: {}", folder_path.display()));
 
-                // Initialize LSP client only if it hasn't been initialized yet
-                self.runtime.block_on(async {
-                    if self.lsp_client.is_none() {
-                        let lsp_client = Arc::new(LspClient::new());
-
-                        let root_uri = Url::from_file_path(&folder_path).expect("Failed to create URL from path");
-                        let init_params = InitializeParams {
-                            root_uri: Some(root_uri),
-                            capabilities: ClientCapabilities::default(),
-                            ..InitializeParams::default()
-                        };
-                        match lsp_client.initialize(init_params).await {
-                            Ok(_) => {
-                                self.lsp_client = Some(lsp_client);
-                                log("LSP client initialized successfully");
-                            },
-                            Err(e) => {
-                                log(&format!("Failed to initialize LSP client: {:?}", e));
-                            }
-                        }
-                    } else {
-                        log("LSP client already initialized");
-                    }
-                });
             }
             self.is_initializing.store(false, Ordering::SeqCst);
         } else {
             log("Folder opening already in progress");
         }
     }
-
-    pub fn notify_file_change(&self, file_path: &str, content: &str) {
-        if let Some(lsp_client) = &self.lsp_client {
-            let uri = Url::from_file_path(file_path).expect("Failed to create URL from path");
-            let lsp_client_clone = Arc::clone(lsp_client);
-            let content = content.to_string();
-            self.runtime.spawn(async move {
-                lsp_client_clone.did_change(DidChangeTextDocumentParams {
-                    text_document: VersionedTextDocumentIdentifier {
-                        uri: uri.clone(),
-                        version: 0, // You might want to implement proper versioning
-                    },
-                    content_changes: vec![TextDocumentContentChangeEvent {
-                        range: None,
-                        range_length: None,
-                        text: content,
-                    }],
-                }).await;
-            });
-        }
-    }
-
     fn save_current_file(&self, code: &str, current_file: &Option<String>, log: &mut dyn FnMut(&str)) {
         if let Some(file) = current_file {
             if let Some(fs) = &self.file_system {
@@ -438,8 +377,6 @@ impl FileModal {
                 match fs.save_file(path, code) {
                     Ok(_) => {
                         log(&format!("Saved file: {}", file));
-                        // Notify LSP about file change
-                        self.notify_file_change(file, code);
                     },
                     Err(e) => log(&format!("Error saving file {}: {}", file, e)),
                 }
