@@ -7,6 +7,7 @@ use crate::components::{
     settings_modal::SettingsModal,
 };
 use tokio::sync::oneshot;
+use crate::core::lsp::LspManager;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -18,6 +19,7 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
+    lsp_manager: Option<LspManager>,
 }
 
 impl IDE {
@@ -34,8 +36,9 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
+            lsp_manager: Some(LspManager::new()),
         };
-        
+
         ide.settings_modal.apply_theme(&cc.egui_ctx);
 
         ide
@@ -171,6 +174,15 @@ impl IDE {
             .show_animated(ctx, self.show_emulator_panel, |ui| {
                 self.emulator_panel.show(ui);
             });
+
+        if let Some(mut lsp_manager) = self.lsp_manager.take() {
+            tokio::spawn(async move {
+                let _ = lsp_manager.initialize(Some(|msg| {
+                    // You can log or handle the initialization message here
+                    println!("{}", msg);
+                })).await;
+            });
+        }
 
         if let Some(new_project_path) = self.file_modal.project_path.clone() {
             if self.console_panel.project_path.as_ref() != Some(&new_project_path) {
