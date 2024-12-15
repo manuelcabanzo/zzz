@@ -8,6 +8,8 @@ use crate::components::{
 };
 use tokio::sync::oneshot;
 use crate::core::lsp::LspManager;
+use tokio::runtime::Runtime;
+use std::sync::{Arc, Mutex};
 
 pub struct IDE {
     file_modal: FileModal,
@@ -19,13 +21,16 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    lsp_manager: Option<LspManager>,
+    lsp_manager: Arc<Mutex<Option<LspManager>>>,
+    tokio_runtime: Arc<Runtime>,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
-
+    
+        let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+        
         let ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
@@ -36,11 +41,23 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_manager: Some(LspManager::new()),
+            lsp_manager: Arc::new(Mutex::new(Some(LspManager::new()))),
+            tokio_runtime: tokio_runtime.clone(),
         };
-
+        
         ide.settings_modal.apply_theme(&cc.egui_ctx);
-
+        
+        let lsp_manager = ide.lsp_manager.clone();
+    
+        ide.tokio_runtime.spawn(async move {
+            if let Some(lsp_manager) = lsp_manager.lock().unwrap().as_mut() {
+                match lsp_manager.start_server() {
+                    Ok(_) => println!("IDE: LSP Server started successfully"),
+                    Err(e) => eprintln!("IDE: Failed to start LSP Server: {}", e),
+                }
+            }
+        });
+    
         ide
     }
 
@@ -175,15 +192,6 @@ impl IDE {
                 self.emulator_panel.show(ui);
             });
 
-        if let Some(mut lsp_manager) = self.lsp_manager.take() {
-            tokio::spawn(async move {
-                let _ = lsp_manager.initialize(Some(|msg| {
-                    // You can log or handle the initialization message here
-                    println!("{}", msg);
-                })).await;
-            });
-        }
-
         if let Some(new_project_path) = self.file_modal.project_path.clone() {
             if self.console_panel.project_path.as_ref() != Some(&new_project_path) {
                 self.console_panel.set_project_path(new_project_path);
@@ -226,6 +234,11 @@ impl Drop for IDE {
     fn drop(&mut self) {
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(());
+        }
+
+        // Stop the LSP server when dropping the IDE
+        if let Some(mut lsp_manager) = self.lsp_manager.lock().unwrap().take() {
+            lsp_manager.stop_server();
         }
     }
 }

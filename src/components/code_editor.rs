@@ -4,6 +4,7 @@ use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
+use lsp_types::CompletionItem;
 
 pub struct CodeEditor {
     pub code: String,
@@ -11,6 +12,7 @@ pub struct CodeEditor {
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
     current_syntax: String,
+    pub lsp_completions: Vec<CompletionItem>,
 }
 
 impl CodeEditor {
@@ -21,7 +23,12 @@ impl CodeEditor {
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
             current_syntax: "JavaScript".to_string(),
+            lsp_completions: Vec::new(),
         }
+    }
+
+    pub fn update_completions(&mut self, completions: Vec<CompletionItem>) {
+        self.lsp_completions = completions;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, available_height: f32) {
@@ -42,6 +49,28 @@ impl CodeEditor {
         let syntax_set = Arc::clone(&self.syntax_set);
         let theme_set = Arc::clone(&self.theme_set);
         let current_syntax = self.current_syntax.clone();
+
+        if !self.lsp_completions.is_empty() {
+            ui.separator();
+            ui.heading("LSP Completions");
+            egui::ScrollArea::vertical()
+                .max_height(100.0)
+                .show(ui, |ui| {
+                    for completion in &self.lsp_completions {
+                        let response = ui.horizontal(|ui| {
+                            ui.label(&completion.label);
+                            if let Some(detail) = &completion.detail {
+                                ui.label(format!("({})", detail));
+                            }
+                        });
+    
+                        if response.response.clicked() {
+                            // Insert the completion at the cursor position
+                            self.code.push_str(&completion.label);
+                        }
+                    }
+                });
+        }
 
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
