@@ -4,7 +4,7 @@ use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
-use lsp_types::CompletionItem;
+use lsp_types::{CompletionItem, Diagnostic};
 
 pub struct CodeEditor {
     pub code: String,
@@ -13,6 +13,12 @@ pub struct CodeEditor {
     theme_set: Arc<ThemeSet>,
     current_syntax: String,
     pub lsp_completions: Vec<CompletionItem>,
+    pub lsp_diagnostics: Vec<Diagnostic>,
+    show_completions: bool,
+    cursor_position: usize,
+    cursor_range: Option<egui::text::CCursor>,
+    pub completions: Vec<String>,
+    pub diagnostics: Vec<String>,
 }
 
 impl CodeEditor {
@@ -22,38 +28,32 @@ impl CodeEditor {
             current_file: None,
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
-            current_syntax: "JavaScript".to_string(),
+            current_syntax: "Java".to_string(),
             lsp_completions: Vec::new(),
+            lsp_diagnostics: Vec::new(),
+            show_completions: false,
+            cursor_position: 0,
+            cursor_range: None,
+            completions: vec![],
+            diagnostics: vec![],
         }
     }
 
-    pub fn update_completions(&mut self, completions: Vec<CompletionItem>) {
-        self.lsp_completions = completions;
+    pub fn update_completions(&mut self, completions: Vec<String>) {
+        self.completions = completions;
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, available_height: f32) {
-        ui.heading("Code Editor");
-        if let Some(file) = &self.current_file {
-            ui.label(format!("Editing: {}", file));
-        }
+    pub fn update_diagnostics(&mut self, diagnostics: Vec<String>) {
+        self.diagnostics = diagnostics;
+    }
 
-        // Syntax selection dropdown
-        egui::ComboBox::from_label("Syntax")
-            .selected_text(&self.current_syntax)
-            .show_ui(ui, |ui| {
-                for syntax in self.syntax_set.syntaxes() {
-                    ui.selectable_value(&mut self.current_syntax, syntax.name.clone(), &syntax.name);
-                }
-            });
-
-        let syntax_set = Arc::clone(&self.syntax_set);
-        let theme_set = Arc::clone(&self.theme_set);
-        let current_syntax = self.current_syntax.clone();
-
-        if !self.lsp_completions.is_empty() {
+    pub fn handle_completions(&mut self, ui: &mut egui::Ui) {
+        // Completions Dropdown (Ctrl + Space)
+        if self.show_completions && !self.lsp_completions.is_empty() {
             ui.separator();
             ui.heading("LSP Completions");
             egui::ScrollArea::vertical()
+                .id_source("lsp_completions_scroll_area") // Assign a unique ID to the ScrollArea
                 .max_height(100.0)
                 .show(ui, |ui| {
                     for completion in &self.lsp_completions {
@@ -63,16 +63,90 @@ impl CodeEditor {
                                 ui.label(format!("({})", detail));
                             }
                         });
-    
+
                         if response.response.clicked() {
-                            // Insert the completion at the cursor position
-                            self.code.push_str(&completion.label);
+                            if let Some(insert_text) = &completion.insert_text {
+                                let start = self.cursor_position;
+                                self.code.insert_str(start, insert_text);
+                                self.show_completions = false;
+                            }
                         }
                     }
                 });
         }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, height: f32) {
+        ui.heading("Code Editor");
+        if let Some(file) = &self.current_file {
+            ui.label(format!("Editing: {}", file));
+        }
+
+        egui::ComboBox::from_label("Syntax")
+            .selected_text(&self.current_syntax)
+            .show_ui(ui, |ui| {
+                for syntax in self.syntax_set.syntaxes() {
+                    ui.selectable_value(&mut self.current_syntax, syntax.name.clone(), &syntax.name);
+                }
+            });
+
+        // Error/Diagnostic Display
+        if !self.lsp_diagnostics.is_empty() {
+            ui.separator();
+            ui.heading("Errors & Warnings");
+            egui::ScrollArea::vertical()
+                .id_source("lsp_diagnostics_scroll_area") // Assign a unique ID to the ScrollArea
+                .max_height(100.0)
+                .show(ui, |ui| {
+                    for diagnostic in &self.lsp_diagnostics {
+                        let severity = match diagnostic.severity {
+                            Some(sev) => match sev {
+                                lsp_types::DiagnosticSeverity::ERROR => "Error",
+                                lsp_types::DiagnosticSeverity::WARNING => "Warning",
+                                lsp_types::DiagnosticSeverity::INFORMATION => "Info",
+                                lsp_types::DiagnosticSeverity::HINT => "Hint",
+                                _ => "Unknown"
+                            },
+                            None => "Unknown"
+                        };
+
+                        ui.colored_label(
+                            match severity {
+                                "Error" => egui::Color32::RED,
+                                "Warning" => egui::Color32::YELLOW,
+                                _ => egui::Color32::GRAY
+                            },
+                            format!("{}: {}", severity, diagnostic.message)
+                        );
+                    }
+                });
+        }
+
+        // egui::ScrollArea::vertical()
+        //     .max_height(height)
+        //     .show(ui, |ui| {
+        //         ui.text_edit_multiline(&mut self.code);
+
+        //         if !self.completions.is_empty() {
+        //             for completion in &self.completions {
+        //                 ui.label(format!("Completion: {}", completion));
+        //             }
+        //         }
+
+        //         if !self.diagnostics.is_empty() {
+        //             for diagnostic in &self.diagnostics {
+        //                 ui.colored_label(egui::Color32::RED, format!("Error: {}", diagnostic));
+        //             }
+        //         }
+        //     });
+            
+        // Code editing area with syntax highlighting
+        let syntax_set = Arc::clone(&self.syntax_set);
+        let theme_set = Arc::clone(&self.theme_set);
+        let current_syntax = self.current_syntax.clone();
 
         egui::ScrollArea::vertical()
+            .id_source("code_editor_scroll_area") // Assign a unique ID to the ScrollArea
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
@@ -81,12 +155,19 @@ impl CodeEditor {
                     ui.fonts(|f| f.layout_job(layout_job))
                 };
 
-                let text_edit = egui::TextEdit::multiline(&mut self.code)
+                let text_edit_response = egui::TextEdit::multiline(&mut self.code)
                     .desired_width(f32::INFINITY)
                     .font(egui::TextStyle::Monospace)
-                    .layouter(&mut layouter);
+                    .layouter(&mut layouter)
+                    .show(ui); // Show the TextEdit widget directly
 
-                ui.add_sized([ui.available_width(), available_height], text_edit);
+                // Update the cursor position and range if the response indicates changes
+                if text_edit_response.response.changed() {
+                    if let Some(cursor_range) = text_edit_response.cursor_range {
+                        self.cursor_position = cursor_range.primary.ccursor.index; // Access the character cursor index
+                        self.cursor_range = Some(cursor_range.primary.ccursor);   // Extract the CCursor
+                    }
+                }
             });
     }
 }

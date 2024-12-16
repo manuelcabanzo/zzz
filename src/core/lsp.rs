@@ -5,13 +5,15 @@ use tower_lsp::lsp_types::{
     DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, InitializedParams, 
     ServerCapabilities, TextDocumentSyncCapability, 
-    TextDocumentSyncKind,
+    TextDocumentSyncKind, Diagnostic, DiagnosticSeverity,
+    CompletionItem,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use serde_json::Value;
 use std::process::{Command, Child, Stdio};
-use std::path::PathBuf;
 use std::io::{BufRead, BufReader};
+use lsp_types::Url;
 
 pub struct KotlinLanguageServer {
     client: Option<Client>,
@@ -25,6 +27,69 @@ impl KotlinLanguageServer {
             documents: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
+    pub async fn send_diagnostics(&self, uri: String, diagnostics: Vec<Diagnostic>) {
+        if let Some(client) = &self.client {
+            client.publish_diagnostics(
+                Url::parse(&uri).unwrap(), 
+                diagnostics, 
+                None
+            ).await;
+        }
+    }
+
+    // Example method to generate some sample diagnostics
+    fn generate_sample_diagnostics(&self, document_content: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+
+        // Example: Check for unused variables
+        if document_content.contains("var unusedVar") {
+            diagnostics.push(Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 10 },
+                },
+                severity: Some(DiagnosticSeverity::WARNING),
+                source: Some("kotlin-language-server".to_string()),
+                message: "Unused variable detected".to_string(),
+                ..Default::default()
+            });
+        }
+
+        // Example: Check for potential syntax errors
+        if document_content.contains("if (") && !document_content.contains(")") {
+            diagnostics.push(Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 5 },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("kotlin-language-server".to_string()),
+                message: "Incomplete if statement".to_string(),
+                ..Default::default()
+            });
+        }
+
+        diagnostics
+    }
+
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        let mut documents = self.documents.lock().await;
+        if let Some(change) = params.content_changes.first() {
+            let uri = params.text_document.uri.to_string();
+            documents.insert(uri.clone(), change.text.clone());
+
+            // Generate and send diagnostics
+            let diagnostics = self.generate_sample_diagnostics(&change.text);
+            if let Some(client) = &self.client {
+                client.publish_diagnostics(
+                    params.text_document.uri.clone(), 
+                    diagnostics, 
+                    None
+                ).await;
+            }
+        }
+    }
+
 }
 
 #[tower_lsp::async_trait]
@@ -70,13 +135,22 @@ impl LanguageServer for KotlinLanguageServer {
         );
     }
 
+    // Modify the did_change method to generate and send diagnostics
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let mut documents = self.documents.lock().await;
         if let Some(change) = params.content_changes.first() {
-            documents.insert(
-                params.text_document.uri.to_string(), 
-                change.text.clone()
-            );
+            let uri = params.text_document.uri.to_string();
+            documents.insert(uri.clone(), change.text.clone());
+
+            // Generate and send diagnostics
+            let diagnostics = self.generate_sample_diagnostics(&change.text);
+            if let Some(client) = &self.client {
+                client.publish_diagnostics(
+                    params.text_document.uri.clone(), 
+                    diagnostics, 
+                    None
+                ).await;
+            }
         }
     }
 
@@ -144,72 +218,110 @@ impl LanguageServer for KotlinLanguageServer {
     }
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
 pub struct LspManager {
-    server_process: Option<Child>,
-    lsp_path: PathBuf,
+    lsp_process: Option<Child>,
+    tx: mpsc::Sender<String>,
+    rx: Arc<Mutex<mpsc::Receiver<String>>>,
 }
+
 impl LspManager {
     pub fn new() -> Self {
-        println!("LspManager: Initializing LSP Manager");
+        let (tx, rx) = mpsc::channel(100);
         Self {
-            server_process: None,
-            lsp_path: PathBuf::from("src/resources/server/bin/kotlin-language-server.bat"),
+            lsp_process: None,
+            tx,
+            rx: Arc::new(Mutex::new(rx)),
         }
     }
 
-    pub fn start_server(&mut self) -> std::io::Result<()> {
-        println!("LspManager: Attempting to start LSP server from path: {:?}", self.lsp_path);
-        
-        match Command::new(&self.lsp_path)
+    pub fn start_server(&mut self) -> Result<(), String> {
+        let server_path = "src/resources/server/bin/kotlin-language-server.bat";
+        let mut process = Command::new(server_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn() {
-                Ok(mut process) => {
-                    println!("LspManager: LSP server started successfully");
-                    
-                    // Capture stdout and stderr
-                    let stdout = process.stdout.take().unwrap();
-                    let stderr = process.stderr.take().unwrap();
-                    
-                    // Spawn threads for stdout and stderr logging
-                    std::thread::spawn(move || {
-                        let reader = BufReader::new(stdout);
-                        for line in reader.lines() {
-                            if let Ok(line) = line {
-                                println!("LSP Server STDOUT: {}", line);
-                            }
-                        }
-                    });
+            .spawn()
+            .map_err(|e| format!("Failed to start LSP server: {}", e))?;
 
-                    std::thread::spawn(move || {
-                        let reader = BufReader::new(stderr);
-                        for line in reader.lines() {
-                            if let Ok(line) = line {
-                                eprintln!("LSP Server STDERR: {}", line);
-                            }
-                        }
-                    });
+        // Take ownership of stdout before moving process
+        let child_stdout = process.stdout.take()
+            .ok_or_else(|| "Failed to capture stdout".to_string())?;
 
-                    self.server_process = Some(process);
-                    Ok(())
-                },
-                Err(e) => {
-                    eprintln!("LspManager: Failed to start LSP server. Error: {}", e);
-                    Err(e)
+        self.lsp_process = Some(process);
+
+        // Spawn a background thread for handling server responses
+        let tx_clone = self.tx.clone();
+        tokio::spawn(async move {
+            let reader = BufReader::new(child_stdout);
+            for line in reader.lines() {
+                if let Ok(msg) = line {
+                    // Attempt to parse JSON, but don't require it
+                    let _ = serde_json::from_str::<Value>(&msg);
+                    
+                    // Try to send the message, ignore if channel is full
+                    let _ = tx_clone.try_send(msg);
                 }
             }
+        });
+
+        Ok(())
     }
 
-    pub fn stop_server(&mut self) {
-        println!("LspManager: Attempting to stop LSP server");
-        if let Some(mut process) = self.server_process.take() {
-            match process.kill() {
-                Ok(_) => println!("LspManager: LSP server stopped successfully"),
-                Err(e) => eprintln!("LspManager: Error stopping LSP server: {}", e),
+    pub fn send_request(&self, request: String) {
+        let _ = self.tx.try_send(request);
+    }
+
+    pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
+        // This is a placeholder. In a real implementation, 
+        // you'd communicate with the actual LSP server
+        Some(vec![
+            CompletionItem {
+                label: "println()".to_string(),
+                kind: Some(tower_lsp::lsp_types::CompletionItemKind::FUNCTION),
+                detail: Some("Kotlin print function".to_string()),
+                insert_text: Some("println()".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "fun".to_string(),
+                kind: Some(tower_lsp::lsp_types::CompletionItemKind::KEYWORD),
+                detail: Some("Function declaration".to_string()),
+                insert_text: Some("fun functionName() {\n    \n}".to_string()),
+                ..Default::default()
             }
-        } else {
-            println!("LspManager: No active LSP server to stop");
+        ])
+    }
+
+    pub fn get_diagnostics(&mut self) -> Option<Vec<Diagnostic>> {
+        // This is a placeholder for sample diagnostics
+        Some(vec![
+            Diagnostic {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 10 },
+                },
+                severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                source: Some("kotlin-language-server".to_string()),
+                message: "Sample warning: Potential improvement".to_string(),
+                ..Default::default()
+            }
+        ])
+    }
+    
+    pub fn stop_server(&mut self) {
+        if let Some(mut process) = self.lsp_process.take() {
+            let _ = process.kill();
         }
     }
 }

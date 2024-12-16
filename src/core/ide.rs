@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use crate::core::lsp::LspManager;
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
+use lsp_types::{CompletionItem, Diagnostic};
 
 pub struct IDE {
     file_modal: FileModal,
@@ -61,6 +62,20 @@ impl IDE {
         ide
     }
 
+    fn map_completion_items_to_strings(completions: Vec<CompletionItem>) -> Vec<String> {
+        completions
+            .into_iter()
+            .map(|item| item.label) // Convert CompletionItem to its label (String)
+            .collect()
+    }
+
+    fn map_diagnostics_to_strings(diagnostics: Vec<Diagnostic>) -> Vec<String> {
+        diagnostics
+            .into_iter()
+            .map(|diag| format!("{}: {}", diag.range.start.line, diag.message))
+            .collect()
+    }
+
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Num1) && i.modifiers.ctrl {
@@ -78,6 +93,18 @@ impl IDE {
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
+            if i.key_pressed(egui::Key::Space) && i.modifiers.ctrl {
+                if let Some(manager) = self.lsp_manager.lock().unwrap().as_mut() {
+                    if let Some(completions) = manager.get_completions() {
+                        let string_completions: Vec<String> = completions
+                            .into_iter()
+                            .map(|item| item.label)
+                            .collect();
+
+                        self.code_editor.update_completions(string_completions);
+                    }
+                }        
+            }            
         });
     }
 
@@ -184,7 +211,17 @@ impl IDE {
         
         self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
-
+    
+        if let Some(lsp_manager) = self.lsp_manager.lock().unwrap().as_mut() {
+            if let Some(completions) = lsp_manager.get_completions() {
+                self.code_editor.update_completions(Self::map_completion_items_to_strings(completions));
+            }
+            
+            if let Some(diagnostics) = lsp_manager.get_diagnostics() {
+                self.code_editor.update_diagnostics(Self::map_diagnostics_to_strings(diagnostics));
+            }            
+        }
+        
         egui::SidePanel::right("emulator_panel")
             .resizable(true)
             .default_width(250.0)
