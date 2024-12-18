@@ -14,7 +14,7 @@ pub struct CodeEditor {
     current_syntax: String,
     pub lsp_completions: Vec<CompletionItem>,
     pub lsp_diagnostics: Vec<Diagnostic>,
-    show_completions: bool,
+    pub show_completions: bool,
     cursor_position: usize,
     cursor_range: Option<egui::text::CCursor>,
     pub completions: Vec<String>,
@@ -46,6 +46,31 @@ impl CodeEditor {
     pub fn update_diagnostics(&mut self, diagnostics: Vec<String>) {
         self.diagnostics = diagnostics;
     }
+    
+    pub fn show_completions(&mut self, ui: &mut egui::Ui) {
+        println!("show_completions called. Completions: {:?}", self.completions);
+        
+        if !self.completions.is_empty() {
+            // Use a more robust UI rendering approach
+            egui::Window::new("Completions")
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
+                    ui.heading("Available Completions");
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for completion in &self.completions {
+                            if ui.button(completion).clicked() {
+                                // Handle completion selection
+                                let cursor_pos = self.cursor_position;
+                                self.code.insert_str(cursor_pos, completion);
+                                self.show_completions = false;
+                            }
+                        }
+                    });
+                });
+        } else {
+            println!("No completions to display");
+        }
+    }
 
     pub fn handle_completions(&mut self, ui: &mut egui::Ui) {
         // Completions Dropdown (Ctrl + Space)
@@ -76,11 +101,13 @@ impl CodeEditor {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, height: f32) {
+    pub fn show(&mut self, ui: &mut egui::Ui, _available_height: f32) {
         ui.heading("Code Editor");
         if let Some(file) = &self.current_file {
             ui.label(format!("Editing: {}", file));
         }
+        
+        self.handle_completions(ui);
 
         egui::ComboBox::from_label("Syntax")
             .selected_text(&self.current_syntax)

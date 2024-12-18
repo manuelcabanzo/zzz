@@ -6,14 +6,12 @@ use tower_lsp::lsp_types::{
     InitializeParams, InitializeResult, InitializedParams, 
     ServerCapabilities, TextDocumentSyncCapability, 
     TextDocumentSyncKind, Diagnostic, DiagnosticSeverity,
-    CompletionItem,
+    CompletionItem, Position, Url,
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use serde_json::Value;
 use std::process::{Command, Child, Stdio};
 use std::io::{BufRead, BufReader};
-use lsp_types::Url;
 
 pub struct KotlinLanguageServer {
     client: Option<Client>,
@@ -70,24 +68,6 @@ impl KotlinLanguageServer {
         }
 
         diagnostics
-    }
-
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let mut documents = self.documents.lock().await;
-        if let Some(change) = params.content_changes.first() {
-            let uri = params.text_document.uri.to_string();
-            documents.insert(uri.clone(), change.text.clone());
-
-            // Generate and send diagnostics
-            let diagnostics = self.generate_sample_diagnostics(&change.text);
-            if let Some(client) = &self.client {
-                client.publish_diagnostics(
-                    params.text_document.uri.clone(), 
-                    diagnostics, 
-                    None
-                ).await;
-            }
-        }
     }
 
 }
@@ -229,20 +209,35 @@ impl LanguageServer for KotlinLanguageServer {
 
 
 
-
 pub struct LspManager {
     lsp_process: Option<Child>,
-    tx: mpsc::Sender<String>,
-    rx: Arc<Mutex<mpsc::Receiver<String>>>,
+    stdout_tx: mpsc::Sender<String>,
+    _stdout_rx: Arc<Mutex<mpsc::Receiver<String>>>,
+    
+    // Channels for completions
+    completion_tx: mpsc::Sender<Vec<CompletionItem>>,
+    completion_rx: mpsc::Receiver<Vec<CompletionItem>>,
+    
+    // Channels for diagnostics
+    diagnostic_tx: mpsc::Sender<Vec<Diagnostic>>,
+    diagnostic_rx: mpsc::Receiver<Vec<Diagnostic>>,
 }
 
 impl LspManager {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(100);
+        // Create channels for stdout, completions, and diagnostics
+        let (stdout_tx, stdout_rx) = mpsc::channel(100);
+        let (completion_tx, completion_rx) = mpsc::channel(10);
+        let (diagnostic_tx, diagnostic_rx) = mpsc::channel(10);
+
         Self {
             lsp_process: None,
-            tx,
-            rx: Arc::new(Mutex::new(rx)),
+            stdout_tx,
+            _stdout_rx: Arc::new(Mutex::new(stdout_rx)),
+            completion_tx,
+            completion_rx,
+            diagnostic_tx,
+            diagnostic_rx,
         }
     }
 
@@ -251,26 +246,30 @@ impl LspManager {
         let mut process = Command::new(server_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to start LSP server: {}", e))?;
 
-        // Take ownership of stdout before moving process
         let child_stdout = process.stdout.take()
             .ok_or_else(|| "Failed to capture stdout".to_string())?;
+        let child_stderr = process.stderr.take()
+            .ok_or_else(|| "Failed to capture stderr".to_string())?;
 
         self.lsp_process = Some(process);
 
-        // Spawn a background thread for handling server responses
-        let tx_clone = self.tx.clone();
+        // Clone sender channels for async tasks
+        let stdout_tx_clone = self.stdout_tx.clone();
+
+
         tokio::spawn(async move {
-            let reader = BufReader::new(child_stdout);
-            for line in reader.lines() {
+            let stdout_reader = BufReader::new(child_stdout);
+            let stderr_reader = BufReader::new(child_stderr);
+
+            // Read both stdout and stderr
+            for line in stdout_reader.lines().chain(stderr_reader.lines()) {
                 if let Ok(msg) = line {
-                    // Attempt to parse JSON, but don't require it
-                    let _ = serde_json::from_str::<Value>(&msg);
-                    
-                    // Try to send the message, ignore if channel is full
-                    let _ = tx_clone.try_send(msg);
+                    println!("LSP Server Message: {}", msg);
+                    let _ = stdout_tx_clone.try_send(msg);
                 }
             }
         });
@@ -278,14 +277,60 @@ impl LspManager {
         Ok(())
     }
 
-    pub fn send_request(&self, request: String) {
-        let _ = self.tx.try_send(request);
+    pub async fn request_completions(&mut self, uri: String, position: Position) -> Option<Vec<CompletionItem>> {
+        // Generate completions based on the current context
+        let completions = self.generate_completions(uri, position);
+        
+        // Send completions through the channel
+        if let Err(e) = self.completion_tx.try_send(completions.clone()) {
+            eprintln!("Failed to send completions: {}", e);
+        }
+        
+        Some(completions)
     }
 
     pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
-        // This is a placeholder. In a real implementation, 
-        // you'd communicate with the actual LSP server
-        Some(vec![
+        // Non-blocking attempt to receive completions
+        match self.completion_rx.try_recv() {
+            Ok(completions) => {
+                println!("LspManager: Retrieved {} completions", completions.len());
+                Some(completions)
+            },
+            Err(_) => {
+                println!("LspManager: No completions available");
+                None
+            }
+        }
+    }
+
+    pub async fn request_diagnostics(&mut self, uri: String, document_content: &str) -> Option<Vec<Diagnostic>> {
+        // Generate diagnostics based on the document content
+        let diagnostics = self.generate_diagnostics(uri, document_content);
+        
+        // Send diagnostics through the channel
+        let _ = self.diagnostic_tx.send(diagnostics.clone()).await;
+        
+        Some(diagnostics)
+    }
+
+    pub fn get_diagnostics(&mut self) -> Option<Vec<Diagnostic>> {
+        // Non-blocking attempt to receive diagnostics
+        match self.diagnostic_rx.try_recv() {
+            Ok(diagnostics) => {
+                println!("LspManager: Retrieved {} diagnostics", diagnostics.len());
+                Some(diagnostics)
+            },
+            Err(_) => {
+                println!("LspManager: No diagnostics available");
+                None
+            }
+        }
+    }
+
+    fn generate_completions(&self, _uri: String, _position: Position) -> Vec<CompletionItem> {
+        // This is where you would typically interact with the actual language server
+        // For now, we'll keep the static completions, but you can expand this
+        let completions = vec![
             CompletionItem {
                 label: "println()".to_string(),
                 kind: Some(tower_lsp::lsp_types::CompletionItemKind::FUNCTION),
@@ -300,23 +345,52 @@ impl LspManager {
                 insert_text: Some("fun functionName() {\n    \n}".to_string()),
                 ..Default::default()
             }
-        ])
+        ];
+    
+        // TODO: In a real implementation, you would:
+        // 1. Parse the document content at the given position
+        // 2. Determine context (e.g., inside a class, after a dot, etc.)
+        // 3. Generate context-aware completions from the language server
+    
+        completions
     }
 
-    pub fn get_diagnostics(&mut self) -> Option<Vec<Diagnostic>> {
-        // This is a placeholder for sample diagnostics
-        Some(vec![
-            Diagnostic {
+    fn generate_diagnostics(&self, _uri: String, document_content: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+
+        // Example: Check for unused variables
+        if document_content.contains("var unusedVar") {
+            diagnostics.push(Diagnostic {
                 range: lsp_types::Range {
-                    start: lsp_types::Position { line: 0, character: 0 },
-                    end: lsp_types::Position { line: 0, character: 10 },
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 10 },
                 },
-                severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                severity: Some(DiagnosticSeverity::WARNING),
                 source: Some("kotlin-language-server".to_string()),
-                message: "Sample warning: Potential improvement".to_string(),
+                message: "Unused variable detected".to_string(),
                 ..Default::default()
-            }
-        ])
+            });
+        }
+
+        // Example: Check for potential syntax errors
+        if document_content.contains("if (") && !document_content.contains(")") {
+            diagnostics.push(Diagnostic {
+                range: lsp_types::Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 5 },
+                },
+                severity: Some(DiagnosticSeverity::ERROR),
+                source: Some("kotlin-language-server".to_string()),
+                message: "Incomplete if statement".to_string(),
+                ..Default::default()
+            });
+        }
+
+        diagnostics
+    }
+
+    pub fn send_request(&self, request: String) {
+        let _ = self.stdout_tx.try_send(request);
     }
     
     pub fn stop_server(&mut self) {

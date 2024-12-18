@@ -9,8 +9,8 @@ use crate::components::{
 use tokio::sync::oneshot;
 use crate::core::lsp::LspManager;
 use tokio::runtime::Runtime;
-use std::sync::{Arc, Mutex};
-use lsp_types::{CompletionItem, Diagnostic};
+use std::sync::Arc;
+use lsp_types::{Diagnostic, Position};
 
 pub struct IDE {
     file_modal: FileModal,
@@ -22,7 +22,7 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    lsp_manager: Arc<Mutex<Option<LspManager>>>,
+    lsp_manager: Arc<tokio::sync::Mutex<Option<LspManager>>>,
     tokio_runtime: Arc<Runtime>,
 }
 
@@ -42,7 +42,8 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_manager: Arc::new(Mutex::new(Some(LspManager::new()))),
+            // Change to tokio::sync::Mutex for async-safe locking
+            lsp_manager: Arc::new(tokio::sync::Mutex::new(Some(LspManager::new()))),
             tokio_runtime: tokio_runtime.clone(),
         };
         
@@ -51,7 +52,7 @@ impl IDE {
         let lsp_manager = ide.lsp_manager.clone();
     
         ide.tokio_runtime.spawn(async move {
-            if let Some(lsp_manager) = lsp_manager.lock().unwrap().as_mut() {
+            if let Some(lsp_manager) = lsp_manager.lock().await.as_mut() {
                 match lsp_manager.start_server() {
                     Ok(_) => println!("IDE: LSP Server started successfully"),
                     Err(e) => eprintln!("IDE: Failed to start LSP Server: {}", e),
@@ -62,21 +63,14 @@ impl IDE {
         ide
     }
 
-    fn map_completion_items_to_strings(completions: Vec<CompletionItem>) -> Vec<String> {
-        completions
-            .into_iter()
-            .map(|item| item.label) // Convert CompletionItem to its label (String)
-            .collect()
-    }
-
-    fn map_diagnostics_to_strings(diagnostics: Vec<Diagnostic>) -> Vec<String> {
+    fn _map_diagnostics_to_strings(diagnostics: Vec<Diagnostic>) -> Vec<String> {
         diagnostics
             .into_iter()
             .map(|diag| format!("{}: {}", diag.range.start.line, diag.message))
             .collect()
     }
 
-    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, _ui:&mut egui::Ui) {
         ctx.input(|i| {
             if i.key_pressed(egui::Key::Num1) && i.modifiers.ctrl {
                 self.file_modal.show = !self.file_modal.show;
@@ -94,17 +88,24 @@ impl IDE {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
             if i.key_pressed(egui::Key::Space) && i.modifiers.ctrl {
-                if let Some(manager) = self.lsp_manager.lock().unwrap().as_mut() {
-                    if let Some(completions) = manager.get_completions() {
-                        let string_completions: Vec<String> = completions
-                            .into_iter()
-                            .map(|item| item.label)
-                            .collect();
-
-                        self.code_editor.update_completions(string_completions);
+                println!("Ctrl+Space pressed, requesting completions");
+                
+                // Create clones for async move
+                let lsp_manager_clone = Arc::clone(&self.lsp_manager);
+                let tokio_runtime_clone = Arc::clone(&self.tokio_runtime);
+    
+                // Spawn a non-blocking task to request completions
+                tokio_runtime_clone.spawn(async move {
+                    if let Some(lsp_manager) = lsp_manager_clone.lock().await.as_mut() {
+                        let _ = lsp_manager.request_completions(
+                            "current_document_uri".to_string(), 
+                            Position { line: 0, character: 0 }
+                        ).await;
                     }
-                }        
-            }            
+                });
+    
+                self.code_editor.show_completions = true;
+            }                         
         });
     }
 
@@ -202,26 +203,11 @@ impl IDE {
     }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // This is where `ui` is automatically available in the closure
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             self.custom_title_bar(ui);
         });
-        
-        self.handle_keyboard_shortcuts(ctx);
-        self.console_panel.update(ctx);
-        
-        self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
-        self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
-    
-        if let Some(lsp_manager) = self.lsp_manager.lock().unwrap().as_mut() {
-            if let Some(completions) = lsp_manager.get_completions() {
-                self.code_editor.update_completions(Self::map_completion_items_to_strings(completions));
-            }
-            
-            if let Some(diagnostics) = lsp_manager.get_diagnostics() {
-                self.code_editor.update_diagnostics(Self::map_diagnostics_to_strings(diagnostics));
-            }            
-        }
-        
+
         egui::SidePanel::right("emulator_panel")
             .resizable(true)
             .default_width(250.0)
@@ -234,8 +220,32 @@ impl IDE {
                 self.console_panel.set_project_path(new_project_path);
             }
         }
-                       
+
+        self.console_panel.update(ctx);
+        self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
+        self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
+
+        if let Ok(mut guard) = self.lsp_manager.try_lock() {
+            if let Some(lsp_manager) = guard.as_mut() {
+                if let Some(completions) = lsp_manager.get_completions() {
+                    // Clone the completions before converting
+                    let completion_strings: Vec<String> = completions
+                        .iter()
+                        .map(|item| item.label.clone())
+                        .collect();
+                    
+                    // Clone the completions for the CodeEditor
+                    self.code_editor.lsp_completions = completions.clone();
+                    self.code_editor.update_completions(completion_strings);
+                    self.code_editor.show_completions = true;
+                }
+            }
+        }
+
+        // Now pass `ui` correctly to the keyboard shortcut handling
         egui::CentralPanel::default().show(ctx, |ui| {
+            self.handle_keyboard_shortcuts(ctx, ui); // Now `ui` is available here
+            
             let available_height = 760.0; // Total available height for the central panel
             let console_height = 280.0;  // Height of the console panel
             let editor_height = if self.show_console_panel {
@@ -251,9 +261,9 @@ impl IDE {
                     ui.set_height(editor_height); // Ensures the editor panel height is fixed
                     self.code_editor.show(ui, available_height); // Render the code editor
                 });
-        
-        });        
-
+        });
+    
+        // Handle the console panel and settings modal as well
         if self.show_console_panel {
             egui::TopBottomPanel::bottom("console_panel")
                 .resizable(false)
@@ -262,9 +272,10 @@ impl IDE {
                     self.console_panel.show(ui);
                 });
         }
-
+    
         self.settings_modal.show(ctx);
     }
+    
 }
 
 impl Drop for IDE {
@@ -273,15 +284,17 @@ impl Drop for IDE {
             let _ = sender.send(());
         }
 
-        // Stop the LSP server when dropping the IDE
-        if let Some(mut lsp_manager) = self.lsp_manager.lock().unwrap().take() {
-            lsp_manager.stop_server();
-        }
+        // Since this is a blocking context, we'll use block_on
+        self.tokio_runtime.block_on(async {
+            if let Some(mut lsp_manager) = self.lsp_manager.lock().await.take() {
+                lsp_manager.stop_server();
+            }
+        });
     }
 }
 
 impl eframe::App for IDE {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        self.update(ctx, frame);
+        self.update(ctx, frame);  // Call your own update method (no changes needed here)
     }
 }
