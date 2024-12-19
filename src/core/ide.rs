@@ -105,6 +105,7 @@ impl IDE {
                 });
     
                 self.code_editor.show_completions = true;
+                self.code_editor.selected_completion_index = 0;
             }                         
         });
     }

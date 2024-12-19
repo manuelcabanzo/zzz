@@ -15,6 +15,7 @@ pub struct CodeEditor {
     pub lsp_completions: Vec<CompletionItem>,
     pub lsp_diagnostics: Vec<Diagnostic>,
     pub show_completions: bool,
+    pub selected_completion_index: usize,
     cursor_position: usize,
     cursor_range: Option<egui::text::CCursor>,
     pub completions: Vec<String>,
@@ -32,6 +33,7 @@ impl CodeEditor {
             lsp_completions: Vec::new(),
             lsp_diagnostics: Vec::new(),
             show_completions: false,
+            selected_completion_index: 0,
             cursor_position: 0,
             cursor_range: None,
             completions: vec![],
@@ -73,31 +75,148 @@ impl CodeEditor {
     }
 
     pub fn handle_completions(&mut self, ui: &mut egui::Ui) {
-        // Completions Dropdown (Ctrl + Space)
-        if self.show_completions && !self.lsp_completions.is_empty() {
-            ui.separator();
-            ui.heading("LSP Completions");
-            egui::ScrollArea::vertical()
-                .id_source("lsp_completions_scroll_area") // Assign a unique ID to the ScrollArea
-                .max_height(100.0)
-                .show(ui, |ui| {
-                    for completion in &self.lsp_completions {
-                        let response = ui.horizontal(|ui| {
-                            ui.label(&completion.label);
-                            if let Some(detail) = &completion.detail {
-                                ui.label(format!("({})", detail));
+        if !self.show_completions || self.lsp_completions.is_empty() {
+            return;
+        }
+    
+        // Calculate cursor position relative to the code editor
+        let screen_pos = if let Some(cursor_range) = &self.cursor_range {
+            // Get the cursor position in screen coordinates
+            let galley = ui.fonts(|f| f.layout_job(egui::text::LayoutJob::simple(
+                self.code.clone(),
+                ui.style().text_styles.get(&egui::TextStyle::Monospace).unwrap().clone(),
+                ui.visuals().text_color(),
+                f32::INFINITY,
+            )));
+            
+            // Fixed: Dereference cursor_range and properly handle the cursor position
+            let cursor = galley.from_ccursor(*cursor_range);
+            let pos = galley.pos_from_cursor(&cursor);
+            ui.min_rect().min + (pos.center() - ui.min_rect().min)
+        } else {
+            ui.min_rect().min // Fallback to top-left if no cursor position
+        };
+        
+        // Rest of the function remains the same...
+        let popup_id = egui::Id::new("completion_popup");
+        let layer_id = egui::LayerId::new(egui::Order::Tooltip, popup_id);
+    
+        let mut clicked_index = None;
+    
+        egui::show_tooltip_at(
+            ui.ctx(),
+            layer_id,
+            popup_id,
+            screen_pos,
+            |ui: &mut egui::Ui| {
+                ui.set_min_width(150.0);
+                ui.set_max_width(300.0);
+                ui.set_max_height(200.0);
+    
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        for (index, completion) in self.lsp_completions.iter().enumerate() {
+                            let is_selected = index == self.selected_completion_index;
+                            
+                            let response = ui.horizontal(|ui| {
+                                ui.style_mut().spacing.item_spacing.x = 5.0;
+                                
+                                let label_color = if is_selected {
+                                    ui.style().visuals.selection.bg_fill
+                                } else {
+                                    ui.style().visuals.text_color()
+                                };
+    
+                                ui.add_sized(
+                                    [ui.available_width() - 20.0, 0.0],
+                                    egui::Label::new(egui::RichText::new(&completion.label)
+                                        .color(label_color)
+                                        .monospace()
+                                    )
+                                );
+                                
+                                if let Some(detail) = &completion.detail {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.weak(detail);
+                                    });
+                                }
+                            }).response;
+    
+                            if is_selected {
+                                let rect = response.rect.expand(1.0);
+                                ui.painter().rect_filled(
+                                    rect,
+                                    2.0,
+                                    ui.style().visuals.selection.bg_fill.linear_multiply(0.8)
+                                );
                             }
-                        });
-
-                        if response.response.clicked() {
-                            if let Some(insert_text) = &completion.insert_text {
-                                let start = self.cursor_position;
-                                self.code.insert_str(start, insert_text);
-                                self.show_completions = false;
+    
+                            if response.clicked() {
+                                clicked_index = Some(index);
                             }
                         }
-                    }
-                });
+                    });
+            }
+        );
+    
+        if let Some(index) = clicked_index {
+            self.selected_completion_index = index;
+            self.apply_selected_completion();
+            return;
+        }
+    
+        ui.input(|i| {
+            if i.key_pressed(egui::Key::ArrowDown) {
+                self.selected_completion_index = (self.selected_completion_index + 1) % self.lsp_completions.len();
+            }
+            if i.key_pressed(egui::Key::ArrowUp) {
+                self.selected_completion_index = if self.selected_completion_index > 0 {
+                    self.selected_completion_index - 1
+                } else {
+                    self.lsp_completions.len() - 1
+                };
+            }
+    
+            if i.key_pressed(egui::Key::Tab) || i.key_pressed(egui::Key::Enter) {
+                self.apply_selected_completion();
+            }
+    
+            if i.key_pressed(egui::Key::Escape) {
+                self.show_completions = false;
+                self.selected_completion_index = 0;
+            }
+        });
+    }
+
+    fn _calculate_cursor_rect(&self, ui: &egui::Ui) -> egui::Rect {
+        // Create a rectangle near the current cursor position
+        let default_cursor_height = 20.0;
+        let default_cursor_width = 10.0;
+
+        let available_rect = ui.ctx().available_rect();
+        egui::Rect::from_min_size(
+            available_rect.left_top() + egui::Vec2::new(default_cursor_width, default_cursor_height),
+            egui::Vec2::new(default_cursor_width, default_cursor_height)
+        )
+    }
+
+    fn apply_selected_completion(&mut self) {
+        if self.selected_completion_index < self.lsp_completions.len() {
+            let selected_completion = &self.lsp_completions[self.selected_completion_index];
+            
+            // Use insert_text if available, otherwise fallback to label
+            let completion_text = selected_completion.insert_text
+                .clone()
+                .unwrap_or_else(|| selected_completion.label.clone());
+
+            // Insert the completion text at the cursor position
+            self.code.insert_str(self.cursor_position, &completion_text);
+
+            // Reset completion state
+            self.show_completions = false;
+            self.selected_completion_index = 0;
         }
     }
 
@@ -107,8 +226,6 @@ impl CodeEditor {
             ui.label(format!("Editing: {}", file));
         }
         
-        self.handle_completions(ui);
-
         egui::ComboBox::from_label("Syntax")
             .selected_text(&self.current_syntax)
             .show_ui(ui, |ui| {
@@ -188,14 +305,14 @@ impl CodeEditor {
                     .layouter(&mut layouter)
                     .show(ui); // Show the TextEdit widget directly
 
-                // Update the cursor position and range if the response indicates changes
-                if text_edit_response.response.changed() {
-                    if let Some(cursor_range) = text_edit_response.cursor_range {
-                        self.cursor_position = cursor_range.primary.ccursor.index; // Access the character cursor index
-                        self.cursor_range = Some(cursor_range.primary.ccursor);   // Extract the CCursor
-                    }
+                if let Some(cursor_range) = text_edit_response.cursor_range {
+                    self.cursor_position = cursor_range.primary.ccursor.index;
+                    self.cursor_range = Some(cursor_range.primary.ccursor);
                 }
             });
+
+            self.handle_completions(ui);
+
     }
 }
 
