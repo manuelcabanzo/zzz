@@ -74,115 +74,88 @@ impl CodeEditor {
         }
     }
 
+    fn handle_completion_keyboard_events(&mut self, ctx: &egui::Context) -> bool {
+        if !self.show_completions || self.lsp_completions.is_empty() {
+            return false;
+        }
+
+        let mut event_handled = false;
+        
+        if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
+            self.selected_completion_index = (self.selected_completion_index + 1) % self.lsp_completions.len();
+            event_handled = true;
+        }
+        
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            self.apply_selected_completion();
+            event_handled = true;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_completions = false;
+            event_handled = true;
+        }
+
+        event_handled
+    }
+
     pub fn handle_completions(&mut self, ui: &mut egui::Ui) {
         if !self.show_completions || self.lsp_completions.is_empty() {
             return;
         }
-    
-        // Store current cursor position for context tracking
-        let current_cursor_pos = self.cursor_position;
-        let menu_pos = self.get_menu_position(ui);
-        let mut should_close_menu = false;
-    
-        // Check if cursor has moved from the position where menu was activated
-        if current_cursor_pos != self.cursor_position {
-            should_close_menu = true;
+
+        // Handle keyboard events first
+        let event_handled = self.handle_completion_keyboard_events(ui.ctx());
+        if event_handled {
+            ui.ctx().memory_mut(|mem| mem.request_focus(ui.id()));
+            return;
         }
-    
-        if !should_close_menu {
-            // Store completions in a separate vec to avoid borrow checker issues
-            let completions = self.lsp_completions.clone();
-            let mut selected_index = self.selected_completion_index;
-            let mut should_apply_completion = false;
-    
-            egui::Area::new(egui::Id::new("completion_popup"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(menu_pos)
-                .constrain(true)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style())
-                        .shadow(ui.visuals().popup_shadow)
+
+        let menu_pos = self.get_menu_position(ui);
+        
+        let mut selected_idx = None;
+        
+        egui::Window::new("completions")
+            .fixed_pos(menu_pos)
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(200.0);
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(200.0)
                         .show(ui, |ui| {
-                            ui.set_min_width(200.0);
-                            ui.set_max_width(400.0);
-                            ui.set_max_height(200.0);
-    
-                            egui::ScrollArea::vertical()
-                                .max_height(200.0)
-                                .show(ui, |ui| {
-                                    for (index, completion) in completions.iter().enumerate() {
-                                        let is_selected = index == selected_index;
-                                        
-                                        let item_response = ui.horizontal(|ui| {
-                                            if is_selected {
-                                                ui.painter().rect_filled(
-                                                    ui.max_rect(),
-                                                    0.0,
-                                                    ui.visuals().selection.bg_fill
-                                                );
-                                            }
-    
-                                            // Add completion kind icon
-                                            if let Some(kind) = &completion.kind {
-                                                let kind_text = match *kind {
-                                                    lsp_types::CompletionItemKind::FUNCTION => "ƒ",
-                                                    lsp_types::CompletionItemKind::METHOD => "○",
-                                                    lsp_types::CompletionItemKind::VARIABLE => "□",
-                                                    lsp_types::CompletionItemKind::CLASS => "◇",
-                                                    lsp_types::CompletionItemKind::INTERFACE => "◆",
-                                                    _ => "•",
-                                                };
-                                                ui.label(kind_text);
-                                                ui.add_space(4.0);
-                                            }
-    
-                                            // Add completion label
-                                            let text_color = if is_selected {
-                                                ui.visuals().selection.stroke.color
-                                            } else {
-                                                ui.visuals().text_color()
-                                            };
-    
-                                            ui.colored_label(text_color, &completion.label);
-    
-                                            // Add completion detail if available
-                                            if let Some(detail) = &completion.detail {
-                                                ui.weak(detail);
-                                            }
-                                        }).response;
-    
-                                        if item_response.clicked() {
-                                            selected_index = index;
-                                            should_apply_completion = true;
-                                        }
-                                    }
-                                });
+                            for (index, completion) in self.lsp_completions.iter().enumerate() {
+                                let is_selected = index == self.selected_completion_index;
+                                let response = ui.selectable_label(
+                                    is_selected,
+                                    format!("{} {}", 
+                                        match completion.kind {
+                                            Some(lsp_types::CompletionItemKind::FUNCTION) => "ƒ",
+                                            Some(lsp_types::CompletionItemKind::METHOD) => "○",
+                                            Some(lsp_types::CompletionItemKind::VARIABLE) => "□",
+                                            Some(lsp_types::CompletionItemKind::CLASS) => "◇",
+                                            Some(lsp_types::CompletionItemKind::INTERFACE) => "◆",
+                                            _ => "•",
+                                        },
+                                        &completion.label
+                                    )
+                                );
+
+                                if response.clicked() {
+                                    selected_idx = Some(index);
+                                }
+                            }
                         });
                 });
-    
-            // Update state after the UI is done
-            self.selected_completion_index = selected_index;
-            if should_apply_completion {
-                self.apply_selected_completion();
-            }
-        } else {
-            self.show_completions = false;
+            });
+
+        // Handle selection after the window closes
+        if let Some(index) = selected_idx {
+            self.selected_completion_index = index;
+            self.apply_selected_completion();
         }
-    
-        // Handle keyboard navigation
-        ui.input(|i| {
-            if i.key_pressed(egui::Key::Enter) {
-                self.apply_selected_completion();
-            }
-            if i.key_pressed(egui::Key::Tab) {
-                // Update index and wrap around to beginning if at end
-                self.selected_completion_index = (self.selected_completion_index + 1) % self.lsp_completions.len();
-            }
-            if i.key_pressed(egui::Key::Escape) {
-                self.show_completions = false;
-                self.selected_completion_index = 0;
-            }
-        });
     }
 
     fn get_menu_position(&self, ui: &egui::Ui) -> egui::Pos2 {
@@ -212,21 +185,52 @@ impl CodeEditor {
     }
 
     fn apply_selected_completion(&mut self) {
-        if self.selected_completion_index < self.lsp_completions.len() {
-            let selected_completion = &self.lsp_completions[self.selected_completion_index];
-            
-            // Use insert_text if available, otherwise fallback to label
-            let completion_text = selected_completion.insert_text
-                .clone()
-                .unwrap_or_else(|| selected_completion.label.clone());
-
-            // Insert the completion text at the cursor position
-            self.code.insert_str(self.cursor_position, &completion_text);
-
-            // Reset completion state
+        if self.selected_completion_index >= self.lsp_completions.len() {
+            // Safely handle out of bounds index
             self.show_completions = false;
             self.selected_completion_index = 0;
+            return;
         }
+
+        let selected_completion = &self.lsp_completions[self.selected_completion_index];
+        
+        // Get the current cursor position and text to determine insertion point
+        let current_pos = self.cursor_position;
+        let current_line = self.code[..current_pos]
+            .lines()
+            .last()
+            .unwrap_or("")
+            .to_string();
+
+        // Determine the start position for the completion
+        let start_pos = current_line
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Calculate positions for text replacement
+        let replacement_start = current_pos - (current_line.len() - start_pos);
+        let replacement_end = current_pos;
+
+        // Get completion text, preferring insert_text over label if available
+        let completion_text = selected_completion
+            .insert_text
+            .clone()
+            .unwrap_or_else(|| selected_completion.label.clone());
+
+        // Safely perform the text replacement
+        if replacement_start <= replacement_end && replacement_end <= self.code.len() {
+            let before = &self.code[..replacement_start];
+            let after = &self.code[replacement_end..];
+            self.code = format!("{}{}{}", before, completion_text, after);
+            
+            // Update cursor position
+            self.cursor_position = replacement_start + completion_text.len();
+        }
+
+        // Reset completion state
+        self.show_completions = false;
+        self.selected_completion_index = 0;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, _available_height: f32) {
@@ -235,6 +239,11 @@ impl CodeEditor {
             ui.label(format!("Editing: {}", file));
         }
         
+        if self.show_completions {
+            let completion_id = ui.make_persistent_id("completion_popup");
+            ui.ctx().memory_mut(|mem| mem.request_focus(completion_id));
+        }
+
         egui::ComboBox::from_label("Syntax")
             .selected_text(&self.current_syntax)
             .show_ui(ui, |ui| {

@@ -6,7 +6,7 @@ use tower_lsp::lsp_types::{
     InitializeParams, InitializeResult, InitializedParams, 
     ServerCapabilities, TextDocumentSyncCapability, 
     TextDocumentSyncKind, Diagnostic, DiagnosticSeverity,
-    CompletionItem, Position, Url,
+    CompletionItem, Position, Url, CompletionItemKind,
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -278,30 +278,40 @@ impl LspManager {
     }
 
     pub async fn request_completions(&mut self, uri: String, position: Position) -> Option<Vec<CompletionItem>> {
-        // Generate completions based on the current context
         let completions = self.generate_completions(uri, position);
         
-        // Send completions through the channel
-        if let Err(e) = self.completion_tx.try_send(completions.clone()) {
-            eprintln!("Failed to send completions: {}", e);
-        }
-        
-        Some(completions)
-    }
-
-    pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
-        // Non-blocking attempt to receive completions
-        match self.completion_rx.try_recv() {
-            Ok(completions) => {
-                println!("LspManager: Retrieved {} completions", completions.len());
+        match self.completion_tx.try_send(completions.clone()) {
+            Ok(_) => {
+                println!("LSP: Successfully sent completions");
                 Some(completions)
             },
-            Err(_) => {
-                println!("LspManager: No completions available");
+            Err(e) => {
+                eprintln!("LSP: Failed to send completions: {}", e);
                 None
             }
         }
     }
+
+    pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
+        match self.completion_rx.try_recv() {
+            Ok(completions) => {
+                if completions.is_empty() {
+                    println!("LSP: No completions available");
+                    None
+                } else {
+                    println!("LSP: Retrieved {} completions", completions.len());
+                    Some(completions)
+                }
+            },
+            Err(e) => {
+                if !matches!(e, mpsc::error::TryRecvError::Empty) {
+                    eprintln!("LSP: Error receiving completions: {}", e);
+                }
+                None
+            }
+        }
+    }
+
 
     pub async fn request_diagnostics(&mut self, uri: String, document_content: &str) -> Option<Vec<Diagnostic>> {
         // Generate diagnostics based on the document content
@@ -327,31 +337,31 @@ impl LspManager {
         }
     }
 
-    fn generate_completions(&self, _uri: String, _position: Position) -> Vec<CompletionItem> {
-        // This is where you would typically interact with the actual language server
-        // For now, we'll keep the static completions, but you can expand this
-        let completions = vec![
-            CompletionItem {
-                label: "println()".to_string(),
-                kind: Some(tower_lsp::lsp_types::CompletionItemKind::FUNCTION),
-                detail: Some("Kotlin print function".to_string()),
-                insert_text: Some("println()".to_string()),
-                ..Default::default()
-            },
-            CompletionItem {
-                label: "fun".to_string(),
-                kind: Some(tower_lsp::lsp_types::CompletionItemKind::KEYWORD),
-                detail: Some("Function declaration".to_string()),
-                insert_text: Some("fun functionName() {\n    \n}".to_string()),
-                ..Default::default()
-            }
+    fn generate_completions(&self, _uri: String, position: Position) -> Vec<CompletionItem> {
+        let mut completions = Vec::new();
+        
+        // Add basic completions with proper error handling
+        let basic_items = vec![
+            ("println", "println()", "Print to console", CompletionItemKind::FUNCTION),
+            ("fun", "fun ${1:name}() {\n    $0\n}", "Function declaration", CompletionItemKind::KEYWORD),
+            ("class", "class ${1:Name} {\n    $0\n}", "Class declaration", CompletionItemKind::CLASS),
+            ("var", "var ${1:name}: ${2:Type} = $0", "Variable declaration", CompletionItemKind::VARIABLE),
         ];
-    
-        // TODO: In a real implementation, you would:
-        // 1. Parse the document content at the given position
-        // 2. Determine context (e.g., inside a class, after a dot, etc.)
-        // 3. Generate context-aware completions from the language server
-    
+
+        for (label, insert_text, detail, kind) in basic_items {
+            completions.push(CompletionItem {
+                label: label.to_string(),
+                kind: Some(kind),
+                detail: Some(detail.to_string()),
+                insert_text: Some(insert_text.to_string()),
+                ..Default::default()
+            });
+        }
+
+        // Log completion generation
+        println!("LSP: Generated {} completions at position line: {}, character: {}", 
+            completions.len(), position.line, position.character);
+
         completions
     }
 
