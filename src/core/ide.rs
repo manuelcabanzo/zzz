@@ -11,6 +11,7 @@ use crate::core::lsp::LspManager;
 use tokio::runtime::Runtime;
 use std::sync::Arc;
 use lsp_types::{Diagnostic, Position};
+use tokio::sync::Mutex as TokioMutex;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -22,16 +23,27 @@ pub struct IDE {
     show_emulator_panel: bool,
     shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    lsp_manager: Arc<tokio::sync::Mutex<Option<LspManager>>>,
+    lsp_manager: Arc<TokioMutex<Option<LspManager>>>, // Change to single lsp_manager field
     tokio_runtime: Arc<Runtime>,
 }
 
 impl IDE {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
-    
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
+        let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
+        let lsp_manager_clone = Arc::clone(&lsp_manager);
+        
+        tokio::spawn(async move {
+            let mut manager = lsp_manager_clone.lock().await;
+            if let Some(lsp_manager) = manager.as_mut() {
+                if let Err(err) = lsp_manager.start_server().await {
+                    eprintln!("Failed to start LSP server: {}", err);
+                }
+            }
+        });
+
         let ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
@@ -42,24 +54,11 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            // Change to tokio::sync::Mutex for async-safe locking
-            lsp_manager: Arc::new(tokio::sync::Mutex::new(Some(LspManager::new()))),
-            tokio_runtime: tokio_runtime.clone(),
+            lsp_manager,
+            tokio_runtime,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
-        
-        let lsp_manager = ide.lsp_manager.clone();
-    
-        ide.tokio_runtime.spawn(async move {
-            if let Some(lsp_manager) = lsp_manager.lock().await.as_mut() {
-                match lsp_manager.start_server() {
-                    Ok(_) => println!("IDE: LSP Server started successfully"),
-                    Err(e) => eprintln!("IDE: Failed to start LSP Server: {}", e),
-                }
-            }
-        });
-    
         ide
     }
 
@@ -89,24 +88,35 @@ impl IDE {
             }
             if i.key_pressed(egui::Key::Space) && i.modifiers.ctrl {
                 println!("Ctrl+Space pressed, requesting completions");
-                
-                // Create clones for async move
-                let lsp_manager_clone = Arc::clone(&self.lsp_manager);
-                let tokio_runtime_clone = Arc::clone(&self.tokio_runtime);
-    
-                // Spawn a non-blocking task to request completions
-                tokio_runtime_clone.spawn(async move {
-                    if let Some(lsp_manager) = lsp_manager_clone.lock().await.as_mut() {
-                        let _ = lsp_manager.request_completions(
-                            "current_document_uri".to_string(), 
-                            Position { line: 0, character: 0 }
-                        ).await;
-                    }
-                });
-    
-                self.code_editor.show_completions = true;
-                self.code_editor.selected_completion_index = 0;
-            }                         
+                if let Some(current_file) = self.code_editor.current_file.clone() {
+                    let position = self.code_editor.get_cursor_position();
+                    println!("Current position: {:?}", position);
+                    
+                    let rt = Arc::clone(&self.tokio_runtime);
+                    let lsp = Arc::clone(&self.lsp_manager);
+                    
+                    rt.spawn(async move {
+                        let guard = lsp.lock().await;
+                        if let Some(manager) = guard.as_ref() {
+                            println!("Sending completion request");
+                            match manager.request_completions(
+                                current_file,
+                                Position {
+                                    line: position.line as u32,
+                                    character: position.column as u32,
+                                }
+                            ).await {
+                                Ok(_) => println!("Completion request sent successfully"),
+                                Err(e) => eprintln!("Error requesting completions: {}", e),
+                            }
+                        } else {
+                            println!("No LSP manager available");
+                        }
+                    });
+                } else {
+                    println!("No current file selected");
+                }
+            }
         });
     }
 
@@ -284,13 +294,6 @@ impl Drop for IDE {
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(());
         }
-
-        // Since this is a blocking context, we'll use block_on
-        self.tokio_runtime.block_on(async {
-            if let Some(mut lsp_manager) = self.lsp_manager.lock().await.take() {
-                lsp_manager.stop_server();
-            }
-        });
     }
 }
 

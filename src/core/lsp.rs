@@ -1,38 +1,208 @@
-use tower_lsp::{Client, LanguageServer};
-use tower_lsp::jsonrpc::Result as LspResult;
-use tower_lsp::lsp_types::{
-    CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, 
-    ServerCapabilities, TextDocumentSyncCapability, 
-    TextDocumentSyncKind, Diagnostic, DiagnosticSeverity,
-    CompletionItem, Position, Url, CompletionItemKind,
-};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tower_lsp::{Client, LanguageServer, LspService};
+use lsp_types::*;
+use lsp_types::request::*;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
-use std::process::{Command, Child, Stdio};
-use std::io::{BufRead, BufReader};
+use std::collections::HashMap;
+use std::result::Result;
+use tower_lsp::jsonrpc::Result as JsonRpcResult;
 
-pub struct KotlinLanguageServer {
-    client: Option<Client>,
-    documents: Arc<Mutex<std::collections::HashMap<String, String>>>,
+#[derive(Default)]
+struct ContextCache {
+    imports: HashMap<String, Vec<String>>,
+    declarations: HashMap<String, Vec<Declaration>>,
+    project_dependencies: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct Declaration {
+    name: String,
+    kind: DeclarationType,
+    scope: String,
+    location: Range,
+}
+
+#[derive(Clone, Debug)]
+enum DeclarationType {
+    Class,
+    Function,
+    Variable,
+    Property,
+}
+
+struct KotlinLanguageServer {
+    client: Client,
+    document_map: Arc<TokioMutex<HashMap<String, String>>>,
+    completion_tx: mpsc::Sender<Vec<CompletionItem>>,
+    initialization_status: Arc<TokioMutex<bool>>,
 }
 
 impl KotlinLanguageServer {
-    pub fn new() -> Self {
+    fn new(
+        client: Client,
+        document_map: Arc<TokioMutex<HashMap<String, String>>>,
+        completion_tx: mpsc::Sender<Vec<CompletionItem>>,
+        initialization_status: Arc<TokioMutex<bool>>,
+    ) -> Self {
         Self {
-            client: None,
-            documents: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            client,
+            document_map,
+            completion_tx,
+            initialization_status,
         }
     }
-    pub async fn send_diagnostics(&self, uri: String, diagnostics: Vec<Diagnostic>) {
-        if let Some(client) = &self.client {
-            client.publish_diagnostics(
-                Url::parse(&uri).unwrap(), 
-                diagnostics, 
-                None
-            ).await;
+
+    async fn analyze_document(&self, uri: &str) -> Vec<CompletionItem> {
+        let documents = self.document_map.lock().await;
+        if let Some(content) = documents.get(uri) {
+            // Here you would analyze the document content and generate context-aware completions
+            // This is a simplified example - you'd want to add proper parsing and analysis
+            let mut completions = Vec::new();
+            
+            // Add local variable completions
+            for line in content.lines() {
+                if let Some(var_name) = line.trim().strip_prefix("var ") {
+                    let var_name = var_name.split(':').next().unwrap_or("").trim().to_string();
+                    if !var_name.is_empty() {
+                        completions.push(CompletionItem {
+                            label: var_name.clone(),
+                            kind: Some(CompletionItemKind::VARIABLE),
+                            detail: Some("Local variable".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+
+            // Add function completions
+            for line in content.lines() {
+                if let Some(fn_def) = line.trim().strip_prefix("fun ") {
+                    if let Some(fn_name) = fn_def.split('(').next() {
+                        completions.push(CompletionItem {
+                            label: fn_name.trim().to_string(),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some("Function".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+
+            completions
+        } else {
+            Vec::new()
         }
+    }
+
+    fn extract_imports(&self, content: &str) -> Vec<String> {
+        content.lines()
+            .filter(|line| line.trim().starts_with("import"))
+            .map(|line| line.trim().to_string())
+            .collect()
+    }
+
+    fn parse_declarations(&self, content: &str) -> Vec<Declaration> {
+        let mut declarations = Vec::new();
+        let lines: Vec<&str> = content.lines().collect();
+        
+        for (i, line) in lines.iter().enumerate() {
+            let line = line.trim();
+            
+            // Parse classes
+            if line.starts_with("class ") {
+                declarations.push(Declaration {
+                    name: line.split_whitespace().nth(1)
+                        .unwrap_or("").to_string(),
+                    kind: DeclarationType::Class,
+                    scope: "global".to_string(),
+                    location: Range {
+                        start: Position { line: i as u32, character: 0 },
+                        end: Position { line: i as u32, character: line.len() as u32 },
+                    },
+                });
+            }
+            
+            // Parse functions
+            if line.starts_with("fun ") {
+                declarations.push(Declaration {
+                    name: line.split_whitespace().nth(1)
+                        .unwrap_or("").split('(').next()
+                        .unwrap_or("").to_string(),
+                    kind: DeclarationType::Function,
+                    scope: "global".to_string(),
+                    location: Range {
+                        start: Position { line: i as u32, character: 0 },
+                        end: Position { line: i as u32, character: line.len() as u32 },
+                    },
+                });
+            }
+        }
+        
+        declarations
+    }
+
+    async fn analyze_project_dependencies(&self, root: &Url) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let gradle_file = root.join("build.gradle.kts")?;
+        if let Ok(content) = tokio::fs::read_to_string(gradle_file.path()).await {
+            let deps = content.lines()
+                .filter(|line| line.contains("implementation"))
+                .map(|line| line.trim().to_string())
+                .collect();
+            Ok(deps)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn get_context_aware_completions(&self, uri: &str, position: Position) -> Vec<CompletionItem> {
+        let mut completions = Vec::new();
+        
+        if let Some(content) = self.document_map.lock().await.get(uri) {
+            // Add basic completions
+            self.add_context_based_completions(&mut completions, content);
+            
+            // Add document-specific completions
+            if let Some(line) = content.lines().nth(position.line as usize) {
+                let prefix = &line[..position.character as usize];
+                
+                // Add more specific completions based on context
+                if prefix.contains(".") {
+                    // Add method completions
+                    completions.push(CompletionItem {
+                        label: "toString()".to_string(),
+                        kind: Some(CompletionItemKind::METHOD),
+                        detail: Some("Convert to string".to_string()),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        
+        // Send completions through channel
+        let _ = self.completion_tx.send(completions.clone()).await;
+        
+        completions
+    }
+
+    fn add_context_based_completions(&self, completions: &mut Vec<CompletionItem>, _content: &str) {
+        // Add basic keyword completions
+        for keyword in ["class", "fun", "val", "var", "if", "when", "for", "while"] {
+            completions.push(CompletionItem {
+                label: keyword.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("Kotlin keyword".to_string()),
+                ..Default::default()
+            });
+        }
+    }
+
+    pub async fn send_diagnostics(&self, uri: String, diagnostics: Vec<Diagnostic>) {
+        let client = &self.client;
+        client.publish_diagnostics(
+            Url::parse(&uri).unwrap(), 
+            diagnostics, 
+            None
+        ).await;
     }
 
     // Example method to generate some sample diagnostics
@@ -72,131 +242,84 @@ impl KotlinLanguageServer {
 
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #[tower_lsp::async_trait]
 impl LanguageServer for KotlinLanguageServer {
-    async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
-        println!("LSP: Initializing server");
-        println!("LSP: Root URI: {:?}", params.root_uri);
-        
-        Ok(InitializeResult {
-            capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-                completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec![".".to_string(), " ".to_string()]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            server_info: Some(tower_lsp::lsp_types::ServerInfo {
-                name: "Kotlin Language Server".to_string(),
-                version: Some("0.1.0".to_string()),
+    async fn initialize(&self, _: InitializeParams) -> JsonRpcResult<InitializeResult> {
+        let capabilities = ServerCapabilities {
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                TextDocumentSyncKind::INCREMENTAL
+            )),
+            completion_provider: Some(CompletionOptions {
+                resolve_provider: Some(true),
+                trigger_characters: Some(vec![".".to_string()]),
+                work_done_progress_options: Default::default(),
+                all_commit_characters: None,
+                completion_item: None,
             }),
+            ..Default::default()
+        };
+
+        Ok(InitializeResult {
+            capabilities,
+            server_info: None,
         })
     }
 
-    async fn initialized(&self, _params: InitializedParams) {
-        if let Some(client) = &self.client {
-            client.log_message(
-                tower_lsp::lsp_types::MessageType::INFO, 
-                "Kotlin LSP server initialized"
-            ).await;
-        }
+    async fn initialized(&self, _: InitializedParams) {
+        *self.initialization_status.lock().await = true;
+        self.client.log_message(MessageType::INFO, "Server initialized!").await;
     }
 
-    async fn shutdown(&self) -> LspResult<()> {
+    async fn shutdown(&self) -> JsonRpcResult<()> {
         Ok(())
     }
 
+    async fn completion(&self, _params: CompletionParams) -> JsonRpcResult<Option<CompletionResponse>> {
+        let items = vec![
+            CompletionItem {
+                label: "test_completion".to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some("Test completion item".to_string()),
+                ..Default::default()
+            }
+        ];
+        
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+    
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let mut documents = self.documents.lock().await;
-        documents.insert(
-            params.text_document.uri.to_string(), 
-            params.text_document.text
-        );
+        let uri = params.text_document.uri.to_string();
+        let content = params.text_document.text;
+        let mut documents = self.document_map.lock().await;
+        documents.insert(uri, content);
     }
 
-    // Modify the did_change method to generate and send diagnostics
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let mut documents = self.documents.lock().await;
-        if let Some(change) = params.content_changes.first() {
-            let uri = params.text_document.uri.to_string();
-            documents.insert(uri.clone(), change.text.clone());
-
-            // Generate and send diagnostics
-            let diagnostics = self.generate_sample_diagnostics(&change.text);
-            if let Some(client) = &self.client {
-                client.publish_diagnostics(
-                    params.text_document.uri.clone(), 
-                    diagnostics, 
-                    None
-                ).await;
-            }
+        let uri = params.text_document.uri.to_string();
+        if let Some(change) = params.content_changes.get(0) {
+            let mut documents = self.document_map.lock().await;
+            documents.insert(uri, change.text.clone());
         }
     }
-
-    async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
-        println!("LSP: Completion request received");
-        println!("LSP: Document URI: {}", params.text_document_position.text_document.uri);
-        println!("LSP: Position - Line: {}, Character: {}", 
-            params.text_document_position.position.line, 
-            params.text_document_position.position.character
-        );
-
-        let documents = self.documents.lock().await;
-        let uri = params.text_document_position.text_document.uri.to_string();
-        
-        let completion_items = if let Some(document_content) = documents.get(&uri) {
-            println!("LSP: Found document content, generating completions");
-            
-            // More sophisticated completion generation
-            let mut items = vec![
-                tower_lsp::lsp_types::CompletionItem {
-                    label: "println()".to_string(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::FUNCTION),
-                    detail: Some("Kotlin print function".to_string()),
-                    insert_text: Some("println()".to_string()),
-                    ..Default::default()
-                },
-                tower_lsp::lsp_types::CompletionItem {
-                    label: "fun".to_string(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::KEYWORD),
-                    detail: Some("Function declaration".to_string()),
-                    insert_text: Some("fun ${1:functionName}() {\n    $0\n}".to_string()),
-                    ..Default::default()
-                }
-            ];
-
-            // Context-based suggestions
-            let current_line = document_content
-                .lines()
-                .nth(params.text_document_position.position.line as usize)
-                .unwrap_or("");
-            
-            println!("LSP: Current line context: {}", current_line);
-
-            if current_line.contains("import") {
-                items.push(tower_lsp::lsp_types::CompletionItem {
-                    label: "kotlin.stdlib".to_string(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::MODULE),
-                    detail: Some("Kotlin Standard Library".to_string()),
-                    ..Default::default()
-                });
-            }
-
-            items
-        } else {
-            println!("LSP: No document content found for URI");
-            vec![]
-        };
-
-        println!("LSP: Generated {} completion items", completion_items.len());
-
-        Ok(Some(CompletionResponse::List(tower_lsp::lsp_types::CompletionList {
-            is_incomplete: false,
-            items: completion_items,
-        })))
-    }
 }
+
 
 
 
@@ -210,202 +333,169 @@ impl LanguageServer for KotlinLanguageServer {
 
 
 pub struct LspManager {
-    lsp_process: Option<Child>,
-    stdout_tx: mpsc::Sender<String>,
-    _stdout_rx: Arc<Mutex<mpsc::Receiver<String>>>,
-    
-    // Channels for completions
+    document_map: Arc<TokioMutex<HashMap<String, String>>>,
     completion_tx: mpsc::Sender<Vec<CompletionItem>>,
     completion_rx: mpsc::Receiver<Vec<CompletionItem>>,
-    
-    // Channels for diagnostics
-    diagnostic_tx: mpsc::Sender<Vec<Diagnostic>>,
-    diagnostic_rx: mpsc::Receiver<Vec<Diagnostic>>,
+    server_state: Arc<TokioMutex<Option<LspServerState>>>,
+    initialization_status: Arc<TokioMutex<bool>>,
+}
+
+struct LspServerState {
+    _process: std::process::Child,
+    client: Client,
 }
 
 impl LspManager {
     pub fn new() -> Self {
-        // Create channels for stdout, completions, and diagnostics
-        let (stdout_tx, stdout_rx) = mpsc::channel(100);
-        let (completion_tx, completion_rx) = mpsc::channel(10);
-        let (diagnostic_tx, diagnostic_rx) = mpsc::channel(10);
-
+        let (completion_tx, completion_rx) = mpsc::channel(32);
+        
         Self {
-            lsp_process: None,
-            stdout_tx,
-            _stdout_rx: Arc::new(Mutex::new(stdout_rx)),
+            document_map: Arc::new(TokioMutex::new(HashMap::new())),
             completion_tx,
             completion_rx,
-            diagnostic_tx,
-            diagnostic_rx,
+            server_state: Arc::new(TokioMutex::new(None)),
+            initialization_status: Arc::new(TokioMutex::new(false)),
         }
     }
 
-    pub fn start_server(&mut self) -> Result<(), String> {
-        let server_path = "src/resources/server/bin/kotlin-language-server.bat";
-        let mut process = Command::new(server_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start LSP server: {}", e))?;
+    pub async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Starting LSP server...");
+        
+        let server_path = std::env::current_dir()?.join("src/resources/server/bin/kotlin-language-server.bat");
+        println!("Server path: {:?}", server_path);
+        
+        let process = std::process::Command::new(&server_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
 
-        let child_stdout = process.stdout.take()
-            .ok_or_else(|| "Failed to capture stdout".to_string())?;
-        let child_stderr = process.stderr.take()
-            .ok_or_else(|| "Failed to capture stderr".to_string())?;
+        println!("Server process started");
 
-        self.lsp_process = Some(process);
-
-        // Clone sender channels for async tasks
-        let stdout_tx_clone = self.stdout_tx.clone();
-
-
-        tokio::spawn(async move {
-            let stdout_reader = BufReader::new(child_stdout);
-            let stderr_reader = BufReader::new(child_stderr);
-
-            // Read both stdout and stderr
-            for line in stdout_reader.lines().chain(stderr_reader.lines()) {
-                if let Ok(msg) = line {
-                    println!("LSP Server Message: {}", msg);
-                    let _ = stdout_tx_clone.try_send(msg);
-                }
-            }
+        let initialization_status = Arc::clone(&self.initialization_status);
+        
+        // Create LSP connection
+        let (service, socket) = LspService::new(move |client| {
+            let doc_map = Arc::new(TokioMutex::new(HashMap::new()));
+            let completion_tx = mpsc::channel(32).0;
+            let init_status = Arc::clone(&initialization_status);
+            
+            KotlinLanguageServer::new(
+                client.clone(),
+                doc_map,
+                completion_tx,
+                init_status,
+            )
         });
 
+        println!("LSP service created");
+
+        // Store server state
+        let mut server_state = self.server_state.lock().await;
+        *server_state = Some(LspServerState {
+            _process: process,
+            client: service.inner().client.clone(),
+        });
+
+        // Create async read/write streams
+        let (read_half, write_half) = tokio::io::duplex(1024);
+        
+        // Spawn server in background task
+        tokio::spawn(async move {
+            println!("Starting LSP server loop");
+            tower_lsp::Server::new(read_half, write_half, socket)
+                .serve(service)
+                .await;
+        });
+
+        // Wait for initialization
+        let mut retries = 0;
+        while !*self.initialization_status.lock().await {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            retries += 1;
+            if retries > 50 {  // 5 second timeout
+                return Err("Server initialization timeout".into());
+            }
+        }
+
+        println!("LSP server initialized successfully");
         Ok(())
     }
 
-    pub async fn request_completions(&mut self, uri: String, position: Position) -> Option<Vec<CompletionItem>> {
-        let completions = self.generate_completions(uri, position);
+    pub async fn request_completions(&self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
+        if !*self.initialization_status.lock().await {
+            return Err("Server not initialized".into());
+        }
+
+        println!("Requesting completions for uri: {}, position: {:?}", uri, position);
         
-        match self.completion_tx.try_send(completions.clone()) {
-            Ok(_) => {
-                println!("LSP: Successfully sent completions");
-                Some(completions)
-            },
-            Err(e) => {
-                eprintln!("LSP: Failed to send completions: {}", e);
-                None
+        if let Some(server_state) = self.server_state.lock().await.as_ref() {
+            let params = CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { 
+                        uri: Url::parse(&uri)? 
+                    },
+                    position,
+                },
+                context: Some(CompletionContext {
+                    trigger_kind: CompletionTriggerKind::INVOKED,
+                    trigger_character: None,
+                }),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+    
+            println!("Sending completion request to LSP server");
+            
+            // Use send_request instead of completion method
+            let request = lsp_types::request::Completion::METHOD.to_string();
+            match server_state.client.send_request::<lsp_types::request::Completion>(params).await {
+                Ok(Some(completion_response)) => {
+                    match completion_response {
+                        CompletionResponse::Array(items) => {
+                            println!("Received {} completion items", items.len());
+                            let _ = self.completion_tx.send(items).await;
+                        },
+                        CompletionResponse::List(list) => {
+                            println!("Received {} completion items", list.items.len());
+                            let _ = self.completion_tx.send(list.items).await;
+                        }
+                    }
+                    Ok(())
+                },
+                Ok(None) => {
+                    println!("No completions available");
+                    Ok(())
+                },
+                Err(e) => Err(format!("Completion request failed: {}", e).into()),
             }
+        } else {
+            Err("No LSP server state available".into())
         }
     }
 
     pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
-        match self.completion_rx.try_recv() {
-            Ok(completions) => {
-                if completions.is_empty() {
-                    println!("LSP: No completions available");
-                    None
-                } else {
-                    println!("LSP: Retrieved {} completions", completions.len());
-                    Some(completions)
-                }
-            },
-            Err(e) => {
-                if !matches!(e, mpsc::error::TryRecvError::Empty) {
-                    eprintln!("LSP: Error receiving completions: {}", e);
-                }
-                None
-            }
+        self.completion_rx.try_recv().ok()
+    }
+
+    pub async fn update_document(&self, uri: String, content: String) {
+        println!("Updating document: {}", uri);
+        let mut documents = self.document_map.lock().await;
+        documents.insert(uri, content);
+    }
+
+    pub async fn stop_server(&mut self) {
+        if let Some(mut state) = self.server_state.lock().await.take() {
+            let _ = state._process.kill();
         }
     }
+}
 
-
-    pub async fn request_diagnostics(&mut self, uri: String, document_content: &str) -> Option<Vec<Diagnostic>> {
-        // Generate diagnostics based on the document content
-        let diagnostics = self.generate_diagnostics(uri, document_content);
-        
-        // Send diagnostics through the channel
-        let _ = self.diagnostic_tx.send(diagnostics.clone()).await;
-        
-        Some(diagnostics)
-    }
-
-    pub fn get_diagnostics(&mut self) -> Option<Vec<Diagnostic>> {
-        // Non-blocking attempt to receive diagnostics
-        match self.diagnostic_rx.try_recv() {
-            Ok(diagnostics) => {
-                println!("LspManager: Retrieved {} diagnostics", diagnostics.len());
-                Some(diagnostics)
-            },
-            Err(_) => {
-                println!("LspManager: No diagnostics available");
-                None
-            }
-        }
-    }
-
-    fn generate_completions(&self, _uri: String, position: Position) -> Vec<CompletionItem> {
-        let mut completions = Vec::new();
-        
-        // Add basic completions with proper error handling
-        let basic_items = vec![
-            ("println", "println()", "Print to console", CompletionItemKind::FUNCTION),
-            ("fun", "fun ${1:name}() {\n    $0\n}", "Function declaration", CompletionItemKind::KEYWORD),
-            ("class", "class ${1:Name} {\n    $0\n}", "Class declaration", CompletionItemKind::CLASS),
-            ("var", "var ${1:name}: ${2:Type} = $0", "Variable declaration", CompletionItemKind::VARIABLE),
-        ];
-
-        for (label, insert_text, detail, kind) in basic_items {
-            completions.push(CompletionItem {
-                label: label.to_string(),
-                kind: Some(kind),
-                detail: Some(detail.to_string()),
-                insert_text: Some(insert_text.to_string()),
-                ..Default::default()
-            });
-        }
-
-        // Log completion generation
-        println!("LSP: Generated {} completions at position line: {}, character: {}", 
-            completions.len(), position.line, position.character);
-
-        completions
-    }
-
-    fn generate_diagnostics(&self, _uri: String, document_content: &str) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-
-        // Example: Check for unused variables
-        if document_content.contains("var unusedVar") {
-            diagnostics.push(Diagnostic {
-                range: lsp_types::Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 10 },
-                },
-                severity: Some(DiagnosticSeverity::WARNING),
-                source: Some("kotlin-language-server".to_string()),
-                message: "Unused variable detected".to_string(),
-                ..Default::default()
-            });
-        }
-
-        // Example: Check for potential syntax errors
-        if document_content.contains("if (") && !document_content.contains(")") {
-            diagnostics.push(Diagnostic {
-                range: lsp_types::Range {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 5 },
-                },
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("kotlin-language-server".to_string()),
-                message: "Incomplete if statement".to_string(),
-                ..Default::default()
-            });
-        }
-
-        diagnostics
-    }
-
-    pub fn send_request(&self, request: String) {
-        let _ = self.stdout_tx.try_send(request);
-    }
-    
-    pub fn stop_server(&mut self) {
-        if let Some(mut process) = self.lsp_process.take() {
-            let _ = process.kill();
+impl Drop for LspManager {
+    fn drop(&mut self) {
+        println!("Shutting down LSP manager");
+        if let Some(mut server_state) = self.server_state.try_lock().ok().and_then(|mut guard| guard.take()) {
+            let _ = server_state._process.kill();
         }
     }
 }

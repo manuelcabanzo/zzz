@@ -26,6 +26,7 @@ anyhow = "1.0.93"
 notify = "7.0.0"
 regex = "1.11.1"
 jsonrpc-core = "18.0.0"
+futures = "0.3.31"
 
 [lib]
 name = "zzz"

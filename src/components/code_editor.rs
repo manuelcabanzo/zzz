@@ -6,6 +6,12 @@ use syntect::util::LinesWithEndings;
 use std::sync::Arc;
 use lsp_types::{CompletionItem, Diagnostic};
 
+#[derive(Debug, Clone, Copy)]
+pub struct CursorPosition {
+    pub line: usize,
+    pub column: usize,
+}
+
 pub struct CodeEditor {
     pub code: String,
     pub current_file: Option<String>,
@@ -41,6 +47,14 @@ impl CodeEditor {
         }
     }
 
+    pub fn get_cursor_position(&self) -> CursorPosition {
+        // Implement based on your text editor's current state
+        CursorPosition {
+            line: 0, // Get actual line number
+            column: 0, // Get actual column number
+        }
+    }
+    
     pub fn update_completions(&mut self, completions: Vec<String>) {
         self.completions = completions;
     }

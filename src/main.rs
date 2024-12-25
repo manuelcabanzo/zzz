@@ -6,8 +6,17 @@ use zzz::core::ide::IDE;
 use std::path::PathBuf;
 use std::sync::Arc;
 use eframe::HardwareAcceleration;
+use zzz::core::lsp::LspManager;
 
-fn main() -> eframe::Result<()> {
+#[tokio::main]
+async fn main() -> eframe::Result<()> {
+    // Initialize LSP manager first
+    let mut lsp_manager = LspManager::new();
+    if let Err(e) = lsp_manager.start_server().await {
+        eprintln!("Failed to start LSP server: {}", e);
+        // Continue execution even if LSP fails - the IDE should still work
+    }
+
     let icon_path = PathBuf::from("src/resources/blacksquare.png");
     let icon = if icon_path.exists() {
         let img = ImageReader::open(icon_path)
