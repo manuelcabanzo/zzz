@@ -48,11 +48,29 @@ impl CodeEditor {
     }
 
     pub fn get_cursor_position(&self) -> CursorPosition {
-        // Implement based on your text editor's current state
-        CursorPosition {
-            line: 0, // Get actual line number
-            column: 0, // Get actual column number
+        let text = &self.code;
+        let cursor_index = self.cursor_position;
+        
+        let mut line = 0;
+        let mut column = 0;
+        let mut current_index = 0;
+        
+        for c in text.chars() {
+            if current_index == cursor_index {
+                break;
+            }
+            
+            if c == '\n' {
+                line += 1;
+                column = 0;
+            } else {
+                column += 1;
+            }
+            
+            current_index += c.len_utf8();
         }
+        
+        CursorPosition { line, column }
     }
     
     pub fn update_completions(&mut self, completions: Vec<String>) {
@@ -95,20 +113,22 @@ impl CodeEditor {
 
         let mut event_handled = false;
         
-        if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
-            self.selected_completion_index = (self.selected_completion_index + 1) % self.lsp_completions.len();
-            event_handled = true;
-        }
-        
-        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-            self.apply_selected_completion();
-            event_handled = true;
-        }
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::Tab) {
+                self.selected_completion_index = (self.selected_completion_index + 1) % self.lsp_completions.len();
+                event_handled = true;
+            }
+            
+            if i.key_pressed(egui::Key::Enter) {
+                self.apply_selected_completion();
+                event_handled = true;
+            }
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.show_completions = false;
-            event_handled = true;
-        }
+            if i.key_pressed(egui::Key::Escape) {
+                self.show_completions = false;
+                event_handled = true;
+            }
+        });
 
         event_handled
     }
