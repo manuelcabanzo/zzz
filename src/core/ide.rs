@@ -28,22 +28,11 @@ pub struct IDE {
 }
 
 impl IDE {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, lsp_manager: Arc<TokioMutex<Option<LspManager>>>) -> Self {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
-        let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
-        let lsp_manager_clone = Arc::clone(&lsp_manager);
-        
-        tokio::spawn(async move {
-            let mut manager = lsp_manager_clone.lock().await;
-            if let Some(lsp_manager) = manager.as_mut() {
-                if let Err(err) = lsp_manager.start_server().await {
-                    eprintln!("Failed to start LSP server: {}", err);
-                }
-            }
-        });
-
+        // Remove the LSP manager creation since we're now receiving it as a parameter
         let ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
@@ -54,7 +43,7 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_manager,
+            lsp_manager, // Use the passed-in LSP manager
             tokio_runtime,
         };
         

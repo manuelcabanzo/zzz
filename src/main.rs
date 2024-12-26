@@ -7,16 +7,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use eframe::HardwareAcceleration;
 use zzz::core::lsp::LspManager;
+use tokio::sync::Mutex as TokioMutex;
 
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
-    // Initialize LSP manager first
-    let mut lsp_manager = LspManager::new();
-    if let Err(e) = lsp_manager.start_server().await {
-        eprintln!("Failed to start LSP server: {}", e);
-        // Continue execution even if LSP fails - the IDE should still work
-    }
+    // Initialize LSP manager in a thread-safe way
+    let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
+    
+    // Start LSP server in the background
+    let lsp_clone = lsp_manager.clone();
+    tokio::spawn(async move {
+        if let Some(manager) = lsp_clone.lock().await.as_mut() {
+            if let Err(e) = manager.start_server().await {
+                eprintln!("Failed to start LSP server: {}", e);
+                // Continue execution even if LSP fails - the IDE should still work
+            }
+        }
+    });
 
+    // Load application icon
     let icon_path = PathBuf::from("src/resources/blacksquare.png");
     let icon = if icon_path.exists() {
         let img = ImageReader::open(icon_path)
@@ -35,6 +44,7 @@ async fn main() -> eframe::Result<()> {
         None
     };
     
+    // Configure viewport
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("ZZZ")
         .with_app_id("Mobile Dev IDE")
@@ -47,6 +57,7 @@ async fn main() -> eframe::Result<()> {
         viewport = viewport.with_icon(icon);
     }
     
+    // Configure native options
     let native_options = eframe::NativeOptions {
         viewport,
         vsync: true,
@@ -56,9 +67,13 @@ async fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     
+    // Run the application
     eframe::run_native(
         "Mobile Dev IDE",
         native_options,
-        Box::new(|cc| Ok(Box::new(IDE::new(cc))))
+        Box::new(move |cc| {
+            // Pass LSP manager to IDE
+            Ok(Box::new(IDE::new(cc, lsp_manager.clone())))
+        })
     )
 }
