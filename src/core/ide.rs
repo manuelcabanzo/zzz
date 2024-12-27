@@ -129,6 +129,11 @@ impl IDE {
                     painter.line_segment([line_start1, line_end1], Stroke::new(1.3, color));
                     painter.line_segment([line_start2, line_end2], Stroke::new(1.3, color));
                 }).clicked() {
+                    // Send shutdown signal before closing
+                    if let Some(sender) = self.shutdown_sender.take() {
+                        let _ = sender.send(());
+                    }
+                    // Request the window to close
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 

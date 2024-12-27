@@ -9,18 +9,21 @@ use eframe::HardwareAcceleration;
 use zzz::core::lsp::LspManager;
 use tokio::sync::Mutex as TokioMutex;
 
+
 #[tokio::main]
 async fn main() -> eframe::Result<()> {
+    // Create a shutdown channel
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    
     // Initialize LSP manager in a thread-safe way
     let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
     
     // Start LSP server in the background
     let lsp_clone = lsp_manager.clone();
-    tokio::spawn(async move {
+    let lsp_handle = tokio::spawn(async move {
         if let Some(manager) = lsp_clone.lock().await.as_mut() {
             if let Err(e) = manager.start_server().await {
                 eprintln!("Failed to start LSP server: {}", e);
-                // Continue execution even if LSP fails - the IDE should still work
             }
         }
     });
@@ -68,12 +71,22 @@ async fn main() -> eframe::Result<()> {
     };
     
     // Run the application
-    eframe::run_native(
+    let result = eframe::run_native(
         "Mobile Dev IDE",
         native_options,
         Box::new(move |cc| {
-            // Pass LSP manager to IDE
             Ok(Box::new(IDE::new(cc, lsp_manager.clone())))
         })
-    )
+    );
+
+    // Wait for shutdown signal and clean up
+    if let Err(e) = shutdown_rx.await {
+        eprintln!("Failed to receive shutdown signal: {}", e);
+    }
+
+    // Clean shutdown of LSP server
+    lsp_handle.abort();
+    let _ = lsp_handle.await;
+
+    result
 }

@@ -1,9 +1,13 @@
+use std::process::Stdio;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
+use tokio::process::{Child, Command};
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use lsp_types::*;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::path::Path;
 use tower_lsp::jsonrpc::Result as JsonRpcResult;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
 
 struct KotlinLanguageServer {
     client: Client,
@@ -89,6 +93,17 @@ impl KotlinLanguageServer {
     }
 }
 
+
+
+
+
+
+
+
+
+
+
+
 #[tower_lsp::async_trait]
 impl LanguageServer for KotlinLanguageServer {
     async fn initialize(&self, _: InitializeParams) -> JsonRpcResult<InitializeResult> {
@@ -144,11 +159,22 @@ impl LanguageServer for KotlinLanguageServer {
     }
 }
 
+
+
+
+
+
+
+
+
+
+
 pub struct LspManager {
     document_map: Arc<TokioMutex<HashMap<String, String>>>,
     completion_tx: mpsc::Sender<Vec<CompletionItem>>,
     completion_rx: mpsc::Receiver<Vec<CompletionItem>>,
     server: Option<tokio::task::JoinHandle<()>>,
+    kotlin_server_process: Option<Child>,
 }
 
 impl LspManager {
@@ -160,15 +186,137 @@ impl LspManager {
             completion_tx,
             completion_rx,
             server: None,
+            kotlin_server_process: None,
         }
     }
 
     pub async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("Starting LSP server...");
+        println!("Starting Kotlin LSP server...");
+        let server_path = Path::new("src/resources/server/bin/kotlin-language-server.bat");
+        if !server_path.exists() {
+            return Err("Kotlin LSP server not found".into());
+        }
+    
+        let mut process = Command::new(server_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+    
+        let stdin = process.stdin.take()
+            .ok_or("Failed to get stdin")?;
+        let stdout = process.stdout.take()
+            .ok_or("Failed to get stdout")?;
+    
+        // Create bidirectional channels for communication
+        let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(32);
+        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(32);
+
+        // Spawn a task to handle stdin
+        let stdin_handle = tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(data) = input_rx.recv().await {
+                if stdin.write_all(&data).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Spawn a task to handle stdout
+        let stdout_handle = tokio::spawn(async move {
+            let mut stdout = stdout;
+            let mut buf = vec![0; 1024];
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(n) if n > 0 => {
+                        if output_tx.send(buf[..n].to_vec()).await.is_err() {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        });
+
+        // Create wrapper types that implement AsyncRead and AsyncWrite
+        struct AsyncReader {
+            rx: mpsc::Receiver<Vec<u8>>,
+            buffer: Vec<u8>,
+            pos: usize,
+        }
+
+        struct AsyncWriter {
+            tx: mpsc::Sender<Vec<u8>>,
+        }
+
+        impl AsyncRead for AsyncReader {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                use std::task::Poll;
+
+                if self.pos < self.buffer.len() {
+                    let remaining = &self.buffer[self.pos..];
+                    let amt = std::cmp::min(remaining.len(), buf.remaining());
+                    buf.put_slice(&remaining[..amt]);
+                    self.pos += amt;
+                    return Poll::Ready(Ok(()));
+                }
+
+                match self.rx.poll_recv(cx) {
+                    Poll::Ready(Some(data)) => {
+                        self.buffer = data;
+                        self.pos = 0;
+                        let amt = std::cmp::min(self.buffer.len(), buf.remaining());
+                        buf.put_slice(&self.buffer[..amt]);
+                        self.pos += amt;
+                        Poll::Ready(Ok(()))
+                    }
+                    Poll::Ready(None) => Poll::Ready(Ok(())),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
+
+        impl AsyncWrite for AsyncWriter {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                buf: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                let tx = &self.tx;
+        
+                // Instead of poll_ready, directly attempt to send using try_send
+                match tx.try_send(buf.to_vec()) {
+                    Ok(_) => std::task::Poll::Ready(Ok(buf.len())),
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => std::task::Poll::Ready(Err(
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed"),
+                    )),
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => std::task::Poll::Pending,
+                }
+            }
+        
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+       
+        self.kotlin_server_process = Some(process);
         
         let document_map = Arc::clone(&self.document_map);
         let completion_tx = self.completion_tx.clone();
-
+    
         let (service, socket) = LspService::new(move |client| {
             KotlinLanguageServer::new(
                 client,
@@ -176,18 +324,29 @@ impl LspManager {
                 completion_tx.clone(),
             )
         });
-
+    
+        let reader = AsyncReader {
+            rx: output_rx,
+            buffer: Vec::new(),
+            pos: 0,
+        };
+        
+        let writer = AsyncWriter {
+            tx: input_tx,
+        };
+    
         let server = tokio::spawn(async move {
-            let stdin = tokio::io::stdin();
-            let stdout = tokio::io::stdout();
-            
-            Server::new(stdin, stdout, socket)
+            Server::new(reader, writer, socket)
                 .serve(service)
                 .await;
+            
+            // Clean up
+            stdin_handle.abort();
+            stdout_handle.abort();
         });
-
+    
         self.server = Some(server);
-        println!("LSP server started successfully");
+        println!("Kotlin LSP server started successfully");
         
         Ok(())
     }
@@ -223,6 +382,10 @@ impl Drop for LspManager {
         println!("Shutting down LSP manager");
         if let Some(server) = self.server.take() {
             server.abort();
+        }
+        
+        if let Some(mut process) = self.kotlin_server_process.take() {
+            let _ = process.start_kill(); // Using tokio's process kill
         }
     }
 }
