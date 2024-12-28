@@ -21,10 +21,11 @@ pub struct IDE {
     settings_modal: SettingsModal,
     show_console_panel: bool,
     show_emulator_panel: bool,
-    shutdown_sender: Option<oneshot::Sender<()>>,
+    pub shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
     lsp_manager: Arc<TokioMutex<Option<LspManager>>>, // Change to single lsp_manager field
-    tokio_runtime: Arc<Runtime>,
+    pub tokio_runtime: Arc<Runtime>,
+    runtime_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl IDE {
@@ -32,7 +33,6 @@ impl IDE {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
-        // Remove the LSP manager creation since we're now receiving it as a parameter
         let ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
@@ -43,8 +43,9 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_manager, // Use the passed-in LSP manager
+            lsp_manager,
             tokio_runtime,
+            runtime_handle: None,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
@@ -83,11 +84,14 @@ impl IDE {
                     
                     let rt = Arc::clone(&self.tokio_runtime);
                     let lsp = Arc::clone(&self.lsp_manager);
+                    let code = self.code_editor.code.clone();
                     
-                    rt.spawn(async move {
-                        let guard = lsp.lock().await;
-                        if let Some(manager) = guard.as_ref() {
-                            println!("Sending completion request");
+                    // Create a new task for handling completions
+                    let handle = rt.spawn(async move {
+                        let mut guard = lsp.lock().await;
+                        if let Some(manager) = guard.as_mut() {
+                            manager.update_document(current_file.clone(), code).await;
+                            
                             match manager.request_completions(
                                 current_file,
                                 Position {
@@ -98,12 +102,13 @@ impl IDE {
                                 Ok(_) => println!("Completion request sent successfully"),
                                 Err(e) => eprintln!("Error requesting completions: {}", e),
                             }
-                        } else {
-                            println!("No LSP manager available");
                         }
                     });
-                } else {
-                    println!("No current file selected");
+
+                    // Store the handle
+                    if let Some(old_handle) = self.runtime_handle.replace(handle) {
+                        old_handle.abort();
+                    }
                 }
             }
         });
@@ -233,16 +238,16 @@ impl IDE {
         if let Ok(mut guard) = self.lsp_manager.try_lock() {
             if let Some(lsp_manager) = guard.as_mut() {
                 if let Some(completions) = lsp_manager.get_completions() {
-                    // Clone the completions before converting
+                    println!("Received completions in IDE: {:?}", completions);
+                    self.code_editor.lsp_completions = completions.clone();
+                    self.code_editor.show_completions = true;
+                    
+                    // Convert completions to strings for the editor
                     let completion_strings: Vec<String> = completions
                         .iter()
                         .map(|item| item.label.clone())
                         .collect();
-                    
-                    // Clone the completions for the CodeEditor
-                    self.code_editor.lsp_completions = completions.clone();
                     self.code_editor.update_completions(completion_strings);
-                    self.code_editor.show_completions = true;
                 }
             }
         }
@@ -285,6 +290,12 @@ impl IDE {
 
 impl Drop for IDE {
     fn drop(&mut self) {
+        // Abort any pending completion requests
+        if let Some(handle) = self.runtime_handle.take() {
+            handle.abort();
+        }
+        
+        // Send shutdown signal
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(());
         }

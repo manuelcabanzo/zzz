@@ -8,24 +8,31 @@ use std::sync::Arc;
 use eframe::HardwareAcceleration;
 use zzz::core::lsp::LspManager;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::runtime::Runtime;
+use std::sync::Mutex;
 
-
-#[tokio::main]
-async fn main() -> eframe::Result<()> {
-    // Create a shutdown channel
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+fn main() -> eframe::Result<()> {
+    // Create a runtime to be shared across the application
+    let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     
-    // Initialize LSP manager in a thread-safe way
-    let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
+    // Create channels for shutdown coordination
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     
-    // Start LSP server in the background
-    let lsp_clone = lsp_manager.clone();
-    let lsp_handle = tokio::spawn(async move {
-        if let Some(manager) = lsp_clone.lock().await.as_mut() {
-            if let Err(e) = manager.start_server().await {
+    // Wrap shutdown_rx in an Arc<Mutex> so it can be safely shared
+    let shutdown_rx = Arc::new(Mutex::new(Some(shutdown_rx)));
+    
+    // Initialize LSP manager
+    let lsp_manager = runtime.block_on(async {
+        let manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
+        
+        // Start LSP server
+        if let Some(lsp) = manager.lock().await.as_mut() {
+            if let Err(e) = lsp.start_server().await {
                 eprintln!("Failed to start LSP server: {}", e);
             }
         }
+        
+        manager
     });
 
     // Load application icon
@@ -69,24 +76,31 @@ async fn main() -> eframe::Result<()> {
         centered: true,
         ..Default::default()
     };
-    
-    // Run the application
+
+    // Create the IDE instance with shared runtime
+    let runtime_clone = runtime.clone();
     let result = eframe::run_native(
         "Mobile Dev IDE",
         native_options,
         Box::new(move |cc| {
-            Ok(Box::new(IDE::new(cc, lsp_manager.clone())))
-        })
+            let mut ide = IDE::new(cc, lsp_manager.clone());
+            ide.shutdown_sender = Some(shutdown_tx);
+            ide.tokio_runtime = runtime_clone;
+            Ok(Box::new(ide))
+        }),
     );
 
-    // Wait for shutdown signal and clean up
-    if let Err(e) = shutdown_rx.await {
-        eprintln!("Failed to receive shutdown signal: {}", e);
+    // Handle shutdown in a synchronous context
+    if let Ok(mut guard) = shutdown_rx.lock() {
+        if let Some(rx) = guard.take() {
+            runtime.block_on(async {
+                let _ = rx.await;
+            });
+        }
     }
 
-    // Clean shutdown of LSP server
-    lsp_handle.abort();
-    let _ = lsp_handle.await;
+    // Clean up runtime in a synchronous context
+    drop(runtime);
 
     result
 }

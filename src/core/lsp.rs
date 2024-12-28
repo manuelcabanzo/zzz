@@ -351,23 +351,59 @@ impl LspManager {
         Ok(())
     }
 
-    pub async fn request_completions(&self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
-        // Create proper URI
+    async fn handle_completion_response(&self, response: CompletionResponse) {
+        if let CompletionResponse::Array(items) = response {
+            if let Err(e) = self.completion_tx.send(items).await {
+                eprintln!("Failed to send completion items: {}", e);
+            }
+        }
+    }
+
+    pub async fn request_completions(&mut self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
         let uri = if !uri.starts_with("file://") {
             format!("file://{}", uri.replace('\\', "/"))
         } else {
             uri
         };
 
-        let content = "".to_string(); // You should get the actual content here
-        self.update_document(uri.clone(), content).await;
+        let content = {
+            let documents = self.document_map.lock().await;
+            documents.get(&uri).cloned().unwrap_or_default()
+        };
 
-        println!("Requesting completions for uri: {}, position: {:?}", uri, position);
+        println!("Updating document: {}", uri);
+        self.update_document(uri.clone(), content.clone()).await;
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.parse()?,
+                },
+                position,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        println!("Sending completion request with params: {:?}", params);
+        
+        // Instead of just sending the request, handle the response
+        if let Some(response) = self.get_completions() {
+            self.handle_completion_response(CompletionResponse::Array(response)).await;
+        }
+
         Ok(())
     }
 
     pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
-        self.completion_rx.try_recv().ok()
+        match self.completion_rx.try_recv() {
+            Ok(completions) => {
+                println!("Received completions: {:?}", completions);
+                Some(completions)
+            }
+            Err(_) => None,
+        }
     }
 
     pub async fn update_document(&self, uri: String, content: String) {
