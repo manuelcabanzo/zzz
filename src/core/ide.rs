@@ -77,10 +77,10 @@ impl IDE {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
             if i.key_pressed(egui::Key::Space) && i.modifiers.ctrl {
-                println!("Ctrl+Space pressed, requesting completions");
+                println!("Ctrl+Space pressed, initiating completion request");
                 if let Some(current_file) = self.code_editor.current_file.clone() {
                     let position = self.code_editor.get_cursor_position();
-                    println!("Current position: {:?}", position);
+                    println!("Requesting completions at position: {:?}", position);
                     
                     let rt = Arc::clone(&self.tokio_runtime);
                     let lsp = Arc::clone(&self.lsp_manager);
@@ -90,6 +90,7 @@ impl IDE {
                     let handle = rt.spawn(async move {
                         let mut guard = lsp.lock().await;
                         if let Some(manager) = guard.as_mut() {
+                            println!("Updating document before completion request");
                             manager.update_document(current_file.clone(), code).await;
                             
                             match manager.request_completions(
@@ -99,13 +100,14 @@ impl IDE {
                                     character: position.column as u32,
                                 }
                             ).await {
-                                Ok(_) => println!("Completion request sent successfully"),
-                                Err(e) => eprintln!("Error requesting completions: {}", e),
+                                Ok(_) => println!("Completion request processed successfully"),
+                                Err(e) => eprintln!("Error in completion request: {}", e),
                             }
+                        } else {
+                            eprintln!("LSP manager not initialized");
                         }
                     });
 
-                    // Store the handle
                     if let Some(old_handle) = self.runtime_handle.replace(handle) {
                         old_handle.abort();
                     }
