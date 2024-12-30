@@ -21,18 +21,19 @@ fn main() -> eframe::Result<()> {
     // Wrap shutdown_rx in an Arc<Mutex> so it can be safely shared
     let shutdown_rx = Arc::new(Mutex::new(Some(shutdown_rx)));
     
-    // Initialize LSP manager
-    let lsp_manager = runtime.block_on(async {
-        let manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
-        
-        // Start LSP server
-        if let Some(lsp) = manager.lock().await.as_mut() {
+    // Initialize LSP manager without blocking
+    let lsp_manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
+    
+    // Clone references for spawning LSP initialization
+    let lsp_manager_clone = Arc::clone(&lsp_manager);
+    
+    // Spawn LSP server initialization as a separate task
+    runtime.spawn(async move {
+        if let Some(lsp) = lsp_manager_clone.lock().await.as_mut() {
             if let Err(e) = lsp.start_server().await {
                 eprintln!("Failed to start LSP server: {}", e);
             }
         }
-        
-        manager
     });
 
     // Load application icon
@@ -93,7 +94,9 @@ fn main() -> eframe::Result<()> {
     // Handle shutdown in a synchronous context
     if let Ok(mut guard) = shutdown_rx.lock() {
         if let Some(rx) = guard.take() {
-            runtime.block_on(async {
+            // Use a new runtime for shutdown handling to avoid nested runtime issues
+            let shutdown_runtime = Runtime::new().expect("Failed to create shutdown runtime");
+            shutdown_runtime.block_on(async {
                 let _ = rx.await;
             });
         }

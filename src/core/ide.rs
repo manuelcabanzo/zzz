@@ -82,12 +82,11 @@ impl IDE {
                     let position = self.code_editor.get_cursor_position();
                     println!("Requesting completions at position: {:?}", position);
                     
-                    let rt = Arc::clone(&self.tokio_runtime);
                     let lsp = Arc::clone(&self.lsp_manager);
                     let code = self.code_editor.code.clone();
                     
-                    // Create a new task for handling completions
-                    let handle = rt.spawn(async move {
+                    // Spawn the completion request as a task
+                    let handle = tokio::spawn(async move {
                         let mut guard = lsp.lock().await;
                         if let Some(manager) = guard.as_mut() {
                             println!("Updating document before completion request");
@@ -108,6 +107,7 @@ impl IDE {
                         }
                     });
 
+                    // Store the handle if needed
                     if let Some(old_handle) = self.runtime_handle.replace(handle) {
                         old_handle.abort();
                     }

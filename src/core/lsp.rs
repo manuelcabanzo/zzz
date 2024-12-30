@@ -200,7 +200,7 @@ pub struct LspManager {
     completion_rx: mpsc::Receiver<Vec<CompletionItem>>,
     server: Option<tokio::task::JoinHandle<()>>,
     kotlin_server_process: Option<Child>,
-    client: Arc<TokioMutex<LspClient>>, // Add this field
+    client: Arc<TokioMutex<LspClient>>,
 }
 
 impl LspManager {
@@ -342,7 +342,6 @@ impl LspManager {
         Ok(())
     }
 
-    // Modify start_server to use the classpath config
     pub async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Setting up Kotlin environment...");
         Self::setup_kotlin_environment()?;
@@ -354,27 +353,36 @@ impl LspManager {
         // Setup classpath configuration
         self.setup_classpath_config()?;
     
-        let server_path = Path::new("src/resources/server/bin/kotlin-language-server");
+        let server_path = Path::new("src/resources/server/bin/kotlin-language-server.bat");
         if !server_path.exists() {
             return Err("Kotlin LSP server not found at expected path".into());
         }
     
-        // Clone the values we need before moving them into the closure
+        // Clone the values we need
         let document_map = self.document_map.clone();
         let completion_tx = self.completion_tx.clone();
         let client = Arc::clone(&self.client);
     
-        let (_service, _socket) = LspService::new(move |tower_lsp_client| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            rt.block_on(async {
-                client.lock().await.set_client(tower_lsp_client.clone());
-            });
+        // Create a oneshot channel for passing the tower_lsp_client
+        let (client_tx, client_rx) = tokio::sync::oneshot::channel();
+        
+        let (service, socket) = LspService::new(move |tower_lsp_client| {
+            // Send the client through the channel instead of using blocking_lock
+            let _ = client_tx.send(tower_lsp_client.clone());
             
             KotlinLanguageServer::new(
                 tower_lsp_client,
                 document_map.clone(),
                 completion_tx.clone(),
             )
+        });
+    
+        // Receive and set the client asynchronously
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            if let Ok(tower_lsp_client) = client_rx.await {
+                client_clone.lock().await.set_client(tower_lsp_client);
+            }
         });
     
         // Start the server with proper environment setup
@@ -395,6 +403,13 @@ impl LspManager {
         println!("Starting Kotlin LSP server...");
         self.kotlin_server_process = Some(command.spawn()?);
         
+        // Start the LSP service
+        tokio::spawn(async move {
+            tower_lsp::Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
+                .serve(service)
+                .await;
+        });
+    
         Ok(())
     }
 
