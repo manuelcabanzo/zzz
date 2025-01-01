@@ -78,15 +78,14 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
-    // Create the IDE instance with shared runtime
     let runtime_clone = runtime.clone();
     let result = eframe::run_native(
         "Mobile Dev IDE",
         native_options,
         Box::new(move |cc| {
             let mut ide = IDE::new(cc, lsp_manager.clone());
+            ide.tokio_runtime = runtime_clone; // Make sure this line exists
             ide.shutdown_sender = Some(shutdown_tx);
-            ide.tokio_runtime = runtime_clone;
             Ok(Box::new(ide))
         }),
     );

@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 use crate::core::lsp::LspManager;
 use tokio::runtime::Runtime;
 use std::sync::Arc;
-use lsp_types::{Diagnostic, Position};
+use lsp_types::Diagnostic;
 use tokio::sync::Mutex as TokioMutex;
 
 pub struct IDE {
@@ -80,39 +80,33 @@ impl IDE {
                 println!("Ctrl+Space pressed, initiating completion request");
                 if let Some(current_file) = self.code_editor.current_file.clone() {
                     let position = self.code_editor.get_cursor_position();
-                    println!("Requesting completions at position: {:?}", position);
+                    let lsp_position = self.code_editor.to_lsp_position(position);
+                    println!("Current file: {}", current_file);
+                    println!("Cursor position: {:?}", position);
                     
                     let lsp = Arc::clone(&self.lsp_manager);
                     let code = self.code_editor.code.clone();
+                    let runtime = Arc::clone(&self.tokio_runtime);
                     
-                    // Spawn the completion request as a task
-                    let handle = tokio::spawn(async move {
+                    runtime.spawn(async move {
                         let mut guard = lsp.lock().await;
                         if let Some(manager) = guard.as_mut() {
-                            println!("Updating document before completion request");
+                            println!("LSP manager found, updating document");
                             manager.update_document(current_file.clone(), code).await;
                             
-                            match manager.request_completions(
-                                current_file,
-                                Position {
-                                    line: position.line as u32,
-                                    character: position.column as u32,
-                                }
-                            ).await {
-                                Ok(_) => println!("Completion request processed successfully"),
-                                Err(e) => eprintln!("Error in completion request: {}", e),
+                            if let Err(e) = manager.request_completions(current_file, lsp_position).await {
+                                eprintln!("Error in completion request: {}", e);
+                            } else {
+                                println!("Completion request successful");
                             }
                         } else {
                             eprintln!("LSP manager not initialized");
                         }
                     });
-
-                    // Store the handle if needed
-                    if let Some(old_handle) = self.runtime_handle.replace(handle) {
-                        old_handle.abort();
-                    }
+                } else {
+                    println!("No file currently open for completion request");
                 }
-            }
+            }            
         });
     }
 

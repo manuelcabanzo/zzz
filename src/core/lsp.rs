@@ -1,6 +1,5 @@
-use std::process::Stdio;
 use tokio::sync::{mpsc, Mutex as TokioMutex};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tower_lsp::{Client, LanguageServer, LspService};
 use lsp_types::*;
 use std::sync::Arc;
@@ -29,67 +28,96 @@ impl KotlinLanguageServer {
         }
     }
 
-    async fn get_completions(&self, uri: &str, position: &Position) -> Vec<CompletionItem> {
+    async fn handle_completion_request(&self, params: CompletionParams) -> JsonRpcResult<Option<CompletionResponse>> {
+        let uri = params.text_document_position.text_document.uri.to_string();
+        let position = params.text_document_position.position;
+
+        println!("Processing completion request for {} at {:?}", uri, position);
+        
+        let completions = self.get_kotlin_completions(&uri, &position).await;
+        println!("Generated {} completion items", completions.len());
+        
+        if completions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(CompletionResponse::Array(completions)))
+        }
+    }
+
+    async fn get_kotlin_completions(&self, uri: &str, position: &Position) -> Vec<CompletionItem> {
+        println!("Generating completions for position: {:?}", position);
         let mut completions = Vec::new();
         
         if let Some(content) = self.document_map.lock().await.get(uri) {
-            // Add basic Kotlin keywords
-            let keywords = vec!["class", "fun", "val", "var", "if", "when", "for", "while"];
-            for keyword in keywords {
+            // Basic Kotlin keywords
+            let keywords = vec![
+                ("class", "Define a class"),
+                ("fun", "Define a function"),
+                ("val", "Immutable variable"),
+                ("var", "Mutable variable"),
+                ("if", "Conditional statement"),
+                ("when", "Pattern matching"),
+                ("for", "Loop construct"),
+                ("while", "Loop construct"),
+            ];
+            
+            for (keyword, detail) in keywords {
                 completions.push(CompletionItem {
                     label: keyword.to_string(),
                     kind: Some(CompletionItemKind::KEYWORD),
-                    detail: Some("Kotlin keyword".to_string()),
+                    detail: Some(detail.to_string()),
+                    insert_text: Some(keyword.to_string()),
+                    documentation: Some(Documentation::String(format!("Kotlin {}", detail))),
                     ..Default::default()
                 });
             }
 
-            // Add context-aware completions based on document content
+            // Context-aware completions
             if let Some(line) = content.lines().nth(position.line as usize) {
                 let prefix = &line[..position.character as usize];
                 
-                // Add method completions when typing after a dot
+                // Add method completions after dot
                 if prefix.ends_with('.') {
-                    completions.extend(vec![
-                        CompletionItem {
-                            label: "toString()".to_string(),
-                            kind: Some(CompletionItemKind::METHOD),
-                            detail: Some("Convert to string".to_string()),
-                            ..Default::default()
-                        },
-                        CompletionItem {
-                            label: "hashCode()".to_string(),
-                            kind: Some(CompletionItemKind::METHOD),
-                            detail: Some("Get hash code".to_string()),
-                            ..Default::default()
-                        },
-                    ]);
-                }
-
-                // Add local variables and functions
-                for line in content.lines() {
-                    if let Some(var_name) = line.trim().strip_prefix("var ") {
+                    let methods = vec![
+                        ("toString()", "Convert to string representation"),
+                        ("hashCode()", "Get hash code value"),
+                        ("equals(other)", "Compare with another object"),
+                    ];
+                    
+                    for (method, detail) in methods {
                         completions.push(CompletionItem {
-                            label: var_name.split(':').next().unwrap_or("").trim().to_string(),
-                            kind: Some(CompletionItemKind::VARIABLE),
-                            detail: Some("Local variable".to_string()),
+                            label: method.to_string(),
+                            kind: Some(CompletionItemKind::METHOD),
+                            detail: Some(detail.to_string()),
+                            insert_text: Some(method.to_string()),
                             ..Default::default()
                         });
                     }
-                    if let Some(fn_def) = line.trim().strip_prefix("fun ") {
-                        if let Some(fn_name) = fn_def.split('(').next() {
-                            completions.push(CompletionItem {
-                                label: fn_name.trim().to_string(),
-                                kind: Some(CompletionItemKind::FUNCTION),
-                                detail: Some("Function".to_string()),
-                                ..Default::default()
-                            });
-                        }
+                }
+
+                // For Gradle files, add specific completions
+                if uri.ends_with("build.gradle.kts") {
+                    let gradle_items = vec![
+                        ("plugins {}", "Configure Gradle plugins"),
+                        ("dependencies {}", "Configure project dependencies"),
+                        ("repositories {}", "Configure dependency repositories"),
+                        ("android {}", "Configure Android build settings"),
+                    ];
+
+                    for (item, detail) in gradle_items {
+                        completions.push(CompletionItem {
+                            label: item.to_string(),
+                            kind: Some(CompletionItemKind::SNIPPET),
+                            detail: Some(detail.to_string()),
+                            insert_text: Some(item.to_string()),
+                            ..Default::default()
+                        });
                     }
                 }
             }
         }
 
+        println!("Returning {} completion items", completions.len());
         completions
     }
 }
@@ -116,13 +144,13 @@ impl LanguageServer for KotlinLanguageServer {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL
+                    TextDocumentSyncKind::FULL
                 )),
                 completion_provider: Some(CompletionOptions {
-                    resolve_provider: Some(true),
+                    resolve_provider: Some(false),
                     trigger_characters: Some(vec![".".to_string()]),
-                    work_done_progress_options: Default::default(),
                     all_commit_characters: None,
+                    work_done_progress_options: Default::default(),
                     completion_item: None,
                 }),
                 ..Default::default()
@@ -140,27 +168,33 @@ impl LanguageServer for KotlinLanguageServer {
     }
 
     async fn completion(&self, params: CompletionParams) -> JsonRpcResult<Option<CompletionResponse>> {
-        let uri = params.text_document_position.text_document.uri.to_string();
-        let position = params.text_document_position.position;
-        
-        let completions = self.get_completions(&uri, &position).await;
-        let _ = self.completion_tx.send(completions.clone()).await;
-        
-        Ok(Some(CompletionResponse::Array(completions)))
+        self.handle_completion_request(params).await
     }
-    
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        println!("Document opened: {}", params.text_document.uri);
         let uri = params.text_document.uri.to_string();
         let content = params.text_document.text;
         let mut documents = self.document_map.lock().await;
-        documents.insert(uri, content);
+        documents.insert(uri.clone(), content);
+        
+        // Notify client that we received the document
+        self.client
+            .log_message(MessageType::INFO, format!("Document opened and indexed: {}", uri))
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri.to_string();
+        println!("Document changed: {}", params.text_document.uri);
         if let Some(change) = params.content_changes.get(0) {
+            let uri = params.text_document.uri.to_string();
             let mut documents = self.document_map.lock().await;
-            documents.insert(uri, change.text.clone());
+            documents.insert(uri.clone(), change.text.clone());
+            
+            // Notify client about the update
+            self.client
+                .log_message(MessageType::INFO, format!("Document updated: {}", uri))
+                .await;
         }
     }
 }
@@ -345,29 +379,22 @@ impl LspManager {
     pub async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Setting up Kotlin environment...");
         Self::setup_kotlin_environment()?;
-    
+        
         let kotlin_home = std::env::var("KOTLIN_HOME")
             .expect("KOTLIN_HOME should be set by setup_kotlin_environment");
         println!("Using KOTLIN_HOME: {}", kotlin_home);
-    
+        
         // Setup classpath configuration
         self.setup_classpath_config()?;
-    
-        let server_path = Path::new("src/resources/server/bin/kotlin-language-server.bat");
-        if !server_path.exists() {
-            return Err("Kotlin LSP server not found at expected path".into());
-        }
-    
-        // Clone the values we need
+        
         let document_map = self.document_map.clone();
         let completion_tx = self.completion_tx.clone();
         let client = Arc::clone(&self.client);
-    
+        
         // Create a oneshot channel for passing the tower_lsp_client
         let (client_tx, client_rx) = tokio::sync::oneshot::channel();
         
         let (service, socket) = LspService::new(move |tower_lsp_client| {
-            // Send the client through the channel instead of using blocking_lock
             let _ = client_tx.send(tower_lsp_client.clone());
             
             KotlinLanguageServer::new(
@@ -376,40 +403,25 @@ impl LspManager {
                 completion_tx.clone(),
             )
         });
-    
-        // Receive and set the client asynchronously
+        
+        // Set up the client
         let client_clone = client.clone();
         tokio::spawn(async move {
             if let Ok(tower_lsp_client) = client_rx.await {
                 client_clone.lock().await.set_client(tower_lsp_client);
+                println!("LSP client initialized successfully");
             }
         });
-    
-        // Start the server with proper environment setup
-        let mut command = Command::new(server_path);
-        command
-            .env("KOTLIN_HOME", &kotlin_home)
-            .env("PATH", format!("{};{}", 
-                kotlin_home.clone(), 
-                std::env::var("PATH").unwrap_or_default()
-            ))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
-    
-        if let Ok(java_home) = std::env::var("JAVA_HOME") {
-            command.env("JAVA_HOME", java_home);
-        }
-    
-        println!("Starting Kotlin LSP server...");
-        self.kotlin_server_process = Some(command.spawn()?);
         
         // Start the LSP service
-        tokio::spawn(async move {
+        self.server = Some(tokio::spawn(async move {
+            println!("Starting LSP service...");
             tower_lsp::Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
                 .serve(service)
                 .await;
-        });
-    
+        }));
+
+        println!("LSP server started successfully");
         Ok(())
     }
 
@@ -424,60 +436,84 @@ impl LspManager {
         }
     }
 
+    async fn get_kotlin_completions(&self, uri: &str, position: &Position) -> Result<Vec<CompletionItem>, Box<dyn std::error::Error>> {
+        let mut completions = Vec::new();
+        
+        if let Some(_content) = self.document_map.lock().await.get(uri) {
+            // Basic Kotlin keywords
+            let keywords = vec![
+                ("class", "Define a class"),
+                ("fun", "Define a function"),
+                ("val", "Immutable variable"),
+                ("var", "Mutable variable"),
+                ("if", "Conditional statement"),
+                ("when", "Pattern matching"),
+                ("for", "Loop construct"),
+                ("while", "Loop construct"),
+            ];
+            
+            for (keyword, detail) in keywords {
+                completions.push(CompletionItem {
+                    label: keyword.to_string(),
+                    kind: Some(CompletionItemKind::KEYWORD),
+                    detail: Some(detail.to_string()),
+                    insert_text: Some(keyword.to_string()),
+                    documentation: Some(Documentation::String(format!("Kotlin {}", detail))),
+                    ..Default::default()
+                });
+            }
+        }
+
+        Ok(completions)
+    }
+    
     pub async fn request_completions(&mut self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Requesting completions from LSP server...");
+        
+        // Ensure URI is properly formatted
         let uri = if !uri.starts_with("file://") {
             format!("file://{}", uri.replace('\\', "/"))
         } else {
             uri
         };
 
-        let uri_parsed = Url::parse(&uri)?;
-
-        let _params = CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri_parsed,
+        // Get the client from the shared state
+        if let Some(client) = self.get_client().await {
+            // Create completion params
+            let params = CompletionParams {
+                text_document_position: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: Url::parse(&uri)?,
+                    },
+                    position,
                 },
-                position,
-            },
-            work_done_progress_params: WorkDoneProgressParams {
-                work_done_token: Some(NumberOrString::String("completion-token".to_string())),
-            },
-            partial_result_params: PartialResultParams {
-                partial_result_token: Some(NumberOrString::String("partial-token".to_string())),
-            },
-            context: Some(CompletionContext {
-                trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
-                trigger_character: Some(".".to_string()),
-            }),
-        };
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+                context: None,
+            };
 
-        println!("Preparing to send completion request...");
-        
-        // Add a timeout for completion requests
-        let completion_future = async {
-            if let Some(response) = self.get_completions() {
-                println!("Received completion response with {} items", response.len());
-                self.handle_completion_response(CompletionResponse::Array(response)).await;
-                Ok(())
-            } else {
-                println!("No completion response received");
-                Err("No completion response".into())
+            // Send the completion request using the notification channel
+            println!("Sending completion request to LSP server");
+            
+            // Get completions from the Kotlin language server
+            let completions = self.get_kotlin_completions(&uri, &position).await?;
+            
+            // Send completions through the channel
+            if let Err(e) = self.completion_tx.send(completions).await {
+                println!("Error sending completions through channel: {}", e);
+                return Err(e.into());
             }
-        };
-
-        match tokio::time::timeout(std::time::Duration::from_secs(5), completion_future).await {
-            Ok(result) => {
-                println!("Completion request completed: {:?}", result);
-                result
-            },
-            Err(_) => {
-                println!("Completion request timed out");
-                Err("Completion request timed out".into())
-            }
+            
+            Ok(())
+        } else {
+            Err("LSP client not initialized".into())
         }
     }
 
+    async fn get_document_content(&self, uri: &str) -> Option<String> {
+        self.document_map.lock().await.get(uri).cloned()
+    }
+    
     pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
         match self.completion_rx.try_recv() {
             Ok(completions) => {

@@ -4,7 +4,7 @@ use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
-use lsp_types::{CompletionItem, Diagnostic};
+use lsp_types::{CompletionItem, Diagnostic, Position};
 
 #[derive(Debug, Clone, Copy)]
 pub struct CursorPosition {
@@ -366,6 +366,14 @@ impl CodeEditor {
             self.handle_completions(ui);
 
     }
+
+    pub fn to_lsp_position(&self, pos: CursorPosition) -> Position {
+        Position {
+            line: pos.line as u32,
+            character: pos.column as u32,
+        }
+    }
+
 }
 
 fn highlight_syntax(
