@@ -33,6 +33,9 @@ fn main() -> eframe::Result<()> {
             if let Err(e) = lsp.start_server().await {
                 eprintln!("Failed to start LSP server: {}", e);
             }
+            if let Err(e) = lsp.connect_to_language_server().await {
+                eprintln!("Failed to connect to language server: {}", e);
+            }
         }
     });
 

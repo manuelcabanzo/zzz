@@ -80,7 +80,6 @@ impl IDE {
                 println!("Ctrl+Space pressed, initiating completion request");
                 if let Some(current_file) = self.code_editor.current_file.clone() {
                     let position = self.code_editor.get_cursor_position();
-                    let lsp_position = self.code_editor.to_lsp_position(position);
                     println!("Current file: {}", current_file);
                     println!("Cursor position: {:?}", position);
                     
@@ -92,13 +91,7 @@ impl IDE {
                         let mut guard = lsp.lock().await;
                         if let Some(manager) = guard.as_mut() {
                             println!("LSP manager found, updating document");
-                            manager.update_document(current_file.clone(), code).await;
-                            
-                            if let Err(e) = manager.request_completions(current_file, lsp_position).await {
-                                eprintln!("Error in completion request: {}", e);
-                            } else {
-                                println!("Completion request successful");
-                            }
+                            let _ = manager.update_document(current_file.clone(), code).await;
                         } else {
                             eprintln!("LSP manager not initialized");
                         }
@@ -106,7 +99,7 @@ impl IDE {
                 } else {
                     println!("No file currently open for completion request");
                 }
-            }            
+            }    
         });
     }
 
@@ -233,21 +226,29 @@ impl IDE {
 
         if let Ok(mut guard) = self.lsp_manager.try_lock() {
             if let Some(lsp_manager) = guard.as_mut() {
-                if let Some(completions) = lsp_manager.get_completions() {
-                    println!("Received completions in IDE: {:?}", completions);
-                    self.code_editor.lsp_completions = completions.clone();
-                    self.code_editor.show_completions = true;
-                    
-                    // Convert completions to strings for the editor
-                    let completion_strings: Vec<String> = completions
-                        .iter()
-                        .map(|item| item.label.clone())
-                        .collect();
-                    self.code_editor.update_completions(completion_strings);
+                let completions_future = lsp_manager.get_completions();
+                
+                // Use the runtime to handle the async operation
+                let runtime = self.tokio_runtime.clone();
+                match runtime.block_on(completions_future) {
+                    Some(items) => {
+                        println!("Received completions in IDE: {:?}", items);
+                        self.code_editor.lsp_completions = items.clone();
+                        self.code_editor.show_completions = true;
+                        
+                        let completion_strings: Vec<String> = items
+                            .iter()
+                            .map(|item| item.label.clone())
+                            .collect();
+                        self.code_editor.update_completions(completion_strings);
+                    }
+                    None => {
+                        println!("No completions received");
+                    }
                 }
             }
         }
-
+        
         // Now pass `ui` correctly to the keyboard shortcut handling
         egui::CentralPanel::default().show(ctx, |ui| {
             self.handle_keyboard_shortcuts(ctx, ui); // Now `ui` is available here
