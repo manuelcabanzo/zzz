@@ -239,15 +239,14 @@ impl IDE {
             if let Some(lsp_manager) = guard.as_mut() {
                 if let Some(completions) = lsp_manager.get_completions() {
                     println!("Received completions in IDE: {:?}", completions);
+                    // Update both completion lists
                     self.code_editor.lsp_completions = completions.clone();
+                    self.code_editor.update_completions(
+                        completions.iter()
+                            .map(|item| item.label.clone())
+                            .collect()
+                    );
                     self.code_editor.show_completions = true;
-                    
-                    // Convert completions to strings for the editor
-                    let completion_strings: Vec<String> = completions
-                        .iter()
-                        .map(|item| item.label.clone())
-                        .collect();
-                    self.code_editor.update_completions(completion_strings);
                 }
             }
         }

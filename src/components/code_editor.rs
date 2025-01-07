@@ -133,23 +133,42 @@ impl CodeEditor {
         event_handled
     }
 
+    fn insert_completion(&mut self, completion: &str) {
+        let cursor_pos = self.cursor_position;
+        // Find the start of the current word
+        let start_pos = self.code[..cursor_pos]
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Replace the current word with the completion
+        self.code = format!(
+            "{}{}{}",
+            &self.code[..start_pos],
+            completion,
+            &self.code[cursor_pos..]
+        );
+        self.cursor_position = start_pos + completion.len();
+    }
+    
     pub fn handle_completions(&mut self, ui: &mut egui::Ui) {
-        if !self.show_completions || self.lsp_completions.is_empty() {
+        if !self.show_completions {
             return;
         }
 
-        // Handle keyboard events first
-        let event_handled = self.handle_completion_keyboard_events(ui.ctx());
-        if event_handled {
-            ui.ctx().memory_mut(|mem| mem.request_focus(ui.id()));
+        // Combine LSP completions with fallback completions
+        let all_completions = self.lsp_completions.iter()
+            .map(|item| item.label.clone())
+            .collect::<Vec<String>>();
+
+        if all_completions.is_empty() {
+            self.show_completions = false;
             return;
         }
 
         let menu_pos = self.get_menu_position(ui);
         
-        let mut selected_idx = None;
-        
-        egui::Window::new("completions")
+        egui::Window::new("Completions")
             .fixed_pos(menu_pos)
             .collapsible(false)
             .resizable(false)
@@ -160,35 +179,20 @@ impl CodeEditor {
                     egui::ScrollArea::vertical()
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            for (index, completion) in self.lsp_completions.iter().enumerate() {
+                            for (index, completion) in all_completions.iter().enumerate() {
                                 let is_selected = index == self.selected_completion_index;
-                                let response = ui.selectable_label(
-                                    is_selected,
-                                    format!("{} {}", 
-                                        match completion.kind {
-                                            Some(lsp_types::CompletionItemKind::FUNCTION) => "ƒ",
-                                            Some(lsp_types::CompletionItemKind::METHOD) => "○",
-                                            Some(lsp_types::CompletionItemKind::VARIABLE) => "□",
-                                            Some(lsp_types::CompletionItemKind::CLASS) => "◇",
-                                            Some(lsp_types::CompletionItemKind::INTERFACE) => "◆",
-                                            _ => "•",
-                                        },
-                                        &completion.label
-                                    )
-                                );
-
-                                if response.clicked() {
-                                    selected_idx = Some(index);
+                                if ui.selectable_label(is_selected, completion).clicked() {
+                                    self.insert_completion(completion);
+                                    self.show_completions = false;
                                 }
                             }
                         });
                 });
             });
 
-        // Handle selection after the window closes
-        if let Some(index) = selected_idx {
-            self.selected_completion_index = index;
-            self.apply_selected_completion();
+        // Handle keyboard navigation
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_completions = false;
         }
     }
 

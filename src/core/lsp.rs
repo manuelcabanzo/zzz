@@ -1,13 +1,13 @@
-use std::process::Stdio;
-use tokio::sync::{mpsc, Mutex as TokioMutex};
-use tokio::process::{Child, Command};
-use tower_lsp::{Client, LanguageServer, LspService, Server};
+use tokio::io::{AsyncWriteExt, AsyncReadExt, AsyncBufReadExt};
+use tower_lsp::{Client, LanguageServer};
 use lsp_types::*;
 use std::sync::Arc;
 use std::collections::HashMap;
-use std::path::Path;
+use std::process::Stdio;
 use tower_lsp::jsonrpc::Result as JsonRpcResult;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
+use tokio::sync::Mutex as TokioMutex;
 
 struct KotlinLanguageServer {
     client: Client,
@@ -18,6 +18,7 @@ struct KotlinLanguageServer {
 impl KotlinLanguageServer {
     fn new(
         client: Client,
+
         document_map: Arc<TokioMutex<HashMap<String, String>>>,
         completion_tx: mpsc::Sender<Vec<CompletionItem>>,
     ) -> Self {
@@ -175,6 +176,7 @@ pub struct LspManager {
     completion_rx: mpsc::Receiver<Vec<CompletionItem>>,
     server: Option<tokio::task::JoinHandle<()>>,
     kotlin_server_process: Option<Child>,
+    stdin_tx: Option<mpsc::Sender<String>>,
 }
 
 impl LspManager {
@@ -187,167 +189,122 @@ impl LspManager {
             completion_rx,
             server: None,
             kotlin_server_process: None,
+            stdin_tx: None,
         }
     }
 
     pub async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("Starting Kotlin LSP server...");
-        let server_path = Path::new("src/resources/server/bin/kotlin-language-server.bat");
+        
+        let server_path = std::env::current_dir()?.join("src/resources/server/bin/kotlin-language-server.bat");
         if !server_path.exists() {
-            return Err("Kotlin LSP server not found".into());
+            return Err(format!("Kotlin LSP server not found at: {}", server_path.display()).into());
         }
-    
-        let mut process = Command::new(server_path)
+
+        let mut process = Command::new(&server_path)
+            .current_dir(server_path.parent().unwrap())
+            .env("JAVA_HOME", "C:\\Program Files\\Java\\jdk-17")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()?;
-    
-        let stdin = process.stdin.take()
-            .ok_or("Failed to get stdin")?;
-        let stdout = process.stdout.take()
-            .ok_or("Failed to get stdout")?;
-    
-        // Create bidirectional channels for communication
-        let (input_tx, mut input_rx) = mpsc::channel::<Vec<u8>>(32);
-        let (output_tx, output_rx) = mpsc::channel::<Vec<u8>>(32);
 
-        // Spawn a task to handle stdin
-        let stdin_handle = tokio::spawn(async move {
-            let mut stdin = stdin;
-            while let Some(data) = input_rx.recv().await {
-                if stdin.write_all(&data).await.is_err() {
-                    break;
+        let stdin = process.stdin.take().ok_or("Failed to get stdin")?;
+        let mut stdout = process.stdout.take().ok_or("Failed to get stdout")?;
+        let stderr = process.stderr.take().ok_or("Failed to get stderr")?;
+
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(32);
+        self.stdin_tx = Some(stdin_tx.clone());
+
+        // Handle stdin
+        let mut stdin = stdin;
+        tokio::spawn(async move {
+            while let Some(message) = stdin_rx.recv().await {
+                if let Err(e) = stdin.write_all(message.as_bytes()).await {
+                    eprintln!("Error writing to stdin: {}", e);
+                    continue;
+                }
+                if let Err(e) = stdin.flush().await {
+                    eprintln!("Error flushing stdin: {}", e);
                 }
             }
         });
 
-        // Spawn a task to handle stdout
-        let stdout_handle = tokio::spawn(async move {
-            let mut stdout = stdout;
-            let mut buf = vec![0; 1024];
-            loop {
-                match stdout.read(&mut buf).await {
-                    Ok(n) if n > 0 => {
-                        if output_tx.send(buf[..n].to_vec()).await.is_err() {
-                            break;
+        self.kotlin_server_process = Some(process);
+        println!("LSP Server started, initializing...");
+        
+        // Initialize the server immediately after starting
+        self.initialize_server().await?;
+        
+        println!("LSP Server initialized successfully");
+        Ok(())
+    }
+
+    async fn initialize_server(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Send initialize request with more capabilities
+        self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "rootUri": null,
+                "capabilities": {
+                    "workspace": {
+                        "applyEdit": true,
+                        "workspaceEdit": {
+                            "documentChanges": true
+                        },
+                        "didChangeConfiguration": {
+                            "dynamicRegistration": true
+                        },
+                        "didChangeWatchedFiles": {
+                            "dynamicRegistration": true
+                        },
+                        "symbol": {
+                            "dynamicRegistration": true
+                        },
+                        "executeCommand": {
+                            "dynamicRegistration": true
+                        }
+                    },
+                    "textDocument": {
+                        "synchronization": {
+                            "dynamicRegistration": true,
+                            "willSave": true,
+                            "willSaveWaitUntil": true,
+                            "didSave": true
+                        },
+                        "completion": {
+                            "dynamicRegistration": true,
+                            "completionItem": {
+                                "snippetSupport": true,
+                                "commitCharactersSupport": true,
+                                "documentationFormat": ["markdown", "plaintext"],
+                                "deprecatedSupport": true,
+                                "preselectSupport": true
+                            },
+                            "completionItemKind": {
+                                "valueSet": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+                            },
+                            "contextSupport": true
                         }
                     }
-                    _ => break,
-                }
+                },
+                "trace": "verbose"
             }
-        });
+        })).await?;
 
-        // Create wrapper types that implement AsyncRead and AsyncWrite
-        struct AsyncReader {
-            rx: mpsc::Receiver<Vec<u8>>,
-            buffer: Vec<u8>,
-            pos: usize,
-        }
+        // Wait a bit for the server to process the initialize request
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        struct AsyncWriter {
-            tx: mpsc::Sender<Vec<u8>>,
-        }
+        // Send initialized notification
+        self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        })).await?;
 
-        impl AsyncRead for AsyncReader {
-            fn poll_read(
-                mut self: std::pin::Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-                buf: &mut tokio::io::ReadBuf<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                use std::task::Poll;
-
-                if self.pos < self.buffer.len() {
-                    let remaining = &self.buffer[self.pos..];
-                    let amt = std::cmp::min(remaining.len(), buf.remaining());
-                    buf.put_slice(&remaining[..amt]);
-                    self.pos += amt;
-                    return Poll::Ready(Ok(()));
-                }
-
-                match self.rx.poll_recv(cx) {
-                    Poll::Ready(Some(data)) => {
-                        self.buffer = data;
-                        self.pos = 0;
-                        let amt = std::cmp::min(self.buffer.len(), buf.remaining());
-                        buf.put_slice(&self.buffer[..amt]);
-                        self.pos += amt;
-                        Poll::Ready(Ok(()))
-                    }
-                    Poll::Ready(None) => Poll::Ready(Ok(())),
-                    Poll::Pending => Poll::Pending,
-                }
-            }
-        }
-
-        impl AsyncWrite for AsyncWriter {
-            fn poll_write(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-                buf: &[u8],
-            ) -> std::task::Poll<std::io::Result<usize>> {
-                let tx = &self.tx;
-        
-                // Instead of poll_ready, directly attempt to send using try_send
-                match tx.try_send(buf.to_vec()) {
-                    Ok(_) => std::task::Poll::Ready(Ok(buf.len())),
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => std::task::Poll::Ready(Err(
-                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed"),
-                    )),
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => std::task::Poll::Pending,
-                }
-            }
-        
-            fn poll_flush(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                std::task::Poll::Ready(Ok(()))
-            }
-        
-            fn poll_shutdown(
-                self: std::pin::Pin<&mut Self>,
-                _: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                std::task::Poll::Ready(Ok(()))
-            }
-        }
-       
-        self.kotlin_server_process = Some(process);
-        
-        let document_map = Arc::clone(&self.document_map);
-        let completion_tx = self.completion_tx.clone();
-    
-        let (service, socket) = LspService::new(move |client| {
-            KotlinLanguageServer::new(
-                client,
-                document_map.clone(),
-                completion_tx.clone(),
-            )
-        });
-    
-        let reader = AsyncReader {
-            rx: output_rx,
-            buffer: Vec::new(),
-            pos: 0,
-        };
-        
-        let writer = AsyncWriter {
-            tx: input_tx,
-        };
-    
-        let server = tokio::spawn(async move {
-            Server::new(reader, writer, socket)
-                .serve(service)
-                .await;
-            
-            // Clean up
-            stdin_handle.abort();
-            stdout_handle.abort();
-        });
-    
-        self.server = Some(server);
-        println!("Kotlin LSP server started successfully");
-        
         Ok(())
     }
 
@@ -359,57 +316,108 @@ impl LspManager {
         }
     }
 
-    pub async fn request_completions(&mut self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
-        let uri = if !uri.starts_with("file://") {
-            format!("file://{}", uri.replace('\\', "/"))
-        } else {
-            uri
-        };
-
-        let content = {
-            let documents = self.document_map.lock().await;
-            documents.get(&uri).cloned().unwrap_or_default()
-        };
-
-        println!("Updating document: {}", uri);
-        self.update_document(uri.clone(), content.clone()).await;
-
-        let params = CompletionParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.parse()?,
-                },
-                position,
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-            context: None,
-        };
-
-        println!("Sending completion request with params: {:?}", params);
-        
-        // Instead of just sending the request, handle the response
-        if let Some(response) = self.get_completions() {
-            self.handle_completion_response(CompletionResponse::Array(response)).await;
+    async fn send_message(&self, message: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(stdin_tx) = &self.stdin_tx {
+            let msg = serde_json::to_string(&message)?;
+            let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
+            println!("Sending message: {}", content); // Debug print
+            stdin_tx.send(content).await?;
         }
+        Ok(())
+    }
+
+    pub async fn request_completions(&self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
+        // First ensure the document is opened
+        let document_content = self.document_map.lock().await.get(&uri).cloned().unwrap_or_default();
+        
+        // Send didOpen notification
+        self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri.clone(),
+                    "languageId": "kotlin",
+                    "version": 1,
+                    "text": document_content
+                }
+            }
+        })).await?;
+
+        // Wait a bit for the server to process the document
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Request completions
+        self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {
+                    "uri": uri
+                },
+                "position": {
+                    "line": position.line,
+                    "character": position.character
+                },
+                "context": {
+                    "triggerKind": 1,
+                    "triggerCharacter": "."
+                }
+            }
+        })).await?;
 
         Ok(())
     }
 
+    async fn send_lsp_message(&self, stdin: &mut tokio::process::ChildStdin, message: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+        let msg = serde_json::to_string(&message)?;
+        let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
+        stdin.write_all(content.as_bytes()).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
     pub fn get_completions(&mut self) -> Option<Vec<CompletionItem>> {
+        // Try to receive completions without blocking
         match self.completion_rx.try_recv() {
             Ok(completions) => {
                 println!("Received completions: {:?}", completions);
                 Some(completions)
             }
-            Err(_) => None,
+            Err(e) => {
+                println!("No completions available: {:?}", e);
+                None
+            }
         }
     }
 
     pub async fn update_document(&self, uri: String, content: String) {
-        println!("Updating document: {}", uri);
+        println!("Updating document: {} with content length: {}", uri, content.len());
         let mut documents = self.document_map.lock().await;
-        documents.insert(uri, content);
+        documents.insert(uri.clone(), content.clone());
+        
+        // Send didChange notification with range information
+        if let Err(e) = self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "version": 1
+                },
+                "contentChanges": [{
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 999999, "character": 999999}
+                    },
+                    "rangeLength": 999999,
+                    "text": content
+                }]
+            }
+        })).await {
+            eprintln!("Error sending didChange notification: {}", e);
+        }
     }
 }
 
