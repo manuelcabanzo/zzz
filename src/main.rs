@@ -21,15 +21,17 @@ fn main() -> eframe::Result<()> {
     // Wrap shutdown_rx in an Arc<Mutex> so it can be safely shared
     let shutdown_rx = Arc::new(Mutex::new(Some(shutdown_rx)));
     
-    // Initialize LSP manager
     let lsp_manager = runtime.block_on(async {
         let manager = Arc::new(TokioMutex::new(Some(LspManager::new())));
         
-        // Start LSP server
+        // Start LSP server and wait for initialization
         if let Some(lsp) = manager.lock().await.as_mut() {
-            if let Err(e) = lsp.start_server().await {
-                eprintln!("Failed to start LSP server: {}", e);
+            match lsp.start_server().await {
+                Ok(_) => println!("LSP server started and initialized successfully"),
+                Err(e) => eprintln!("Failed to start LSP server: {}", e),
             }
+            // Add a small delay to ensure the server is ready
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
         
         manager

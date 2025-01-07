@@ -210,7 +210,7 @@ impl LspManager {
             .spawn()?;
 
         let stdin = process.stdin.take().ok_or("Failed to get stdin")?;
-        let mut stdout = process.stdout.take().ok_or("Failed to get stdout")?;
+        let stdout = process.stdout.take().ok_or("Failed to get stdout")?;
         let stderr = process.stderr.take().ok_or("Failed to get stderr")?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(32);
@@ -230,6 +230,69 @@ impl LspManager {
             }
         });
 
+        // Handle stdout
+        let completion_tx = self.completion_tx.clone();
+        let stdout_handler = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stdout);
+            let mut header_buffer = String::new();
+            let mut content_length = None;
+            let mut buffer = Vec::new();
+
+            loop {
+                header_buffer.clear();
+                content_length = None;
+
+                // Read headers until we get a blank line
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if line.starts_with("Content-Length: ") {
+                        if let Ok(len) = line["Content-Length: ".len()..].trim().parse::<usize>() {
+                            content_length = Some(len);
+                        }
+                    }
+                    header_buffer.push_str(&line);
+                }
+
+                // Read content
+                if let Some(length) = content_length {
+                    buffer.resize(length, 0);
+                    if reader.read_exact(&mut buffer).await.is_err() {
+                        continue;
+                    }
+
+                    if let Ok(content) = String::from_utf8(buffer.clone()) {
+                        println!("Received from server: {}", content);
+                        if let Ok(response) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(result) = response.get("result") {
+                                if let Ok(items) = serde_json::from_value::<Vec<CompletionItem>>(result.clone()) {
+                                    let _ = completion_tx.send(items).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Handle stderr
+        let stderr_handler = tokio::spawn(async move {
+            let mut reader = tokio::io::BufReader::new(stderr);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
+                }
+                eprintln!("LSP stderr: {}", line.trim());
+                line.clear();
+            }
+        });
+
         self.kotlin_server_process = Some(process);
         println!("LSP Server started, initializing...");
         
@@ -241,14 +304,27 @@ impl LspManager {
     }
 
     async fn initialize_server(&self) -> Result<(), Box<dyn std::error::Error>> {
-        // Send initialize request with more capabilities
+        // Get both the IDE root and Android project root
+        let ide_root = format!("file:///{}", std::env::current_dir()?.to_str().unwrap().replace("\\", "/"));
+        let android_project_root = "file:///C:/Users/manue/AndroidStudioProjects/emulator";
+        
         self.send_message(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
             "params": {
                 "processId": std::process::id(),
-                "rootUri": null,
+                "rootUri": android_project_root,  // Use Android project root
+                "workspaceFolders": [
+                    {
+                        "uri": android_project_root,
+                        "name": "android-project"
+                    },
+                    {
+                        "uri": ide_root,
+                        "name": "ide-project"
+                    }
+                ],
                 "capabilities": {
                     "workspace": {
                         "applyEdit": true,
@@ -291,45 +367,90 @@ impl LspManager {
                         }
                     }
                 },
+                "initializationOptions": {
+                    "storagePath": "C:/Users/manue/.config/kotlin-language-server",
+                    "kotlinCompilerOpts": {
+                        "jvm": {
+                            "target": "17"
+                        }
+                    },
+                    "includeFiles": [
+                        "**/*.kt",
+                        "**/*.kts"
+                    ]
+                },
                 "trace": "verbose"
             }
         })).await?;
-
+    
         // Wait a bit for the server to process the initialize request
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
+    
         // Send initialized notification
         self.send_message(serde_json::json!({
             "jsonrpc": "2.0",
             "method": "initialized",
             "params": {}
         })).await?;
-
-        Ok(())
-    }
-
-    async fn handle_completion_response(&self, response: CompletionResponse) {
-        if let CompletionResponse::Array(items) = response {
-            if let Err(e) = self.completion_tx.send(items).await {
-                eprintln!("Failed to send completion items: {}", e);
+    
+        // Send workspace configuration
+        self.send_message(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": {
+                    "kotlin": {
+                        "compiler": {
+                            "jvm": {
+                                "target": "17"
+                            }
+                        },
+                        "debugAdapter": {
+                            "enabled": true
+                        },
+                        "externalSources": {
+                            "autoConvert": true,
+                            "useKlsScheme": true
+                        },
+                        "trace": {
+                            "server": "verbose"
+                        }
+                    }
+                }
             }
-        }
+        })).await?;
+    
+        Ok(())
     }
 
     async fn send_message(&self, message: serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(stdin_tx) = &self.stdin_tx {
             let msg = serde_json::to_string(&message)?;
             let content = format!("Content-Length: {}\r\n\r\n{}", msg.len(), msg);
-            println!("Sending message: {}", content); // Debug print
+            println!("Sending LSP message: {}", msg); // More detailed logging
             stdin_tx.send(content).await?;
+        } else {
+            return Err("No stdin sender available".into());
         }
         Ok(())
     }
 
     pub async fn request_completions(&self, uri: String, position: Position) -> Result<(), Box<dyn std::error::Error>> {
-        // First ensure the document is opened
+        // Convert Windows path to URI format
+        let mut uri = uri.replace("\\", "/");
+        if !uri.starts_with("file:///") {
+            uri = format!("file:///{}", uri);
+        }
+        
         let document_content = self.document_map.lock().await.get(&uri).cloned().unwrap_or_default();
         
+        // Determine language ID based on file extension
+        let language_id = if uri.ends_with(".kts") {
+            "kotlin-script"
+        } else {
+            "kotlin"
+        };
+
         // Send didOpen notification
         self.send_message(serde_json::json!({
             "jsonrpc": "2.0",
@@ -337,7 +458,7 @@ impl LspManager {
             "params": {
                 "textDocument": {
                     "uri": uri.clone(),
-                    "languageId": "kotlin",
+                    "languageId": language_id,
                     "version": 1,
                     "text": document_content
                 }
@@ -347,7 +468,7 @@ impl LspManager {
         // Wait a bit for the server to process the document
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Request completions
+        // Request completions with improved context
         self.send_message(serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -361,7 +482,7 @@ impl LspManager {
                     "character": position.character
                 },
                 "context": {
-                    "triggerKind": 1,
+                    "triggerKind": 2,  // Triggered by trigger character
                     "triggerCharacter": "."
                 }
             }
@@ -393,25 +514,43 @@ impl LspManager {
     }
 
     pub async fn update_document(&self, uri: String, content: String) {
-        println!("Updating document: {} with content length: {}", uri, content.len());
+        let mut uri = uri.replace("\\", "/");
+        if !uri.starts_with("file:///") {
+            uri = format!("file:///{}", uri);
+        }
+        
         let mut documents = self.document_map.lock().await;
+        let is_new_document = !documents.contains_key(&uri);
         documents.insert(uri.clone(), content.clone());
         
-        // Send didChange notification with range information
+        // Send didOpen for new documents
+        if is_new_document {
+            if let Err(e) = self.send_message(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri.clone(),
+                        "languageId": "kotlin",
+                        "version": 1,
+                        "text": content.clone()
+                    }
+                }
+            })).await {
+                eprintln!("Error sending didOpen notification: {}", e);
+            }
+        }
+        
+        // Then send didChange
         if let Err(e) = self.send_message(serde_json::json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didChange",
             "params": {
                 "textDocument": {
                     "uri": uri,
-                    "version": 1
+                    "version": 2  // Increment version
                 },
                 "contentChanges": [{
-                    "range": {
-                        "start": {"line": 0, "character": 0},
-                        "end": {"line": 999999, "character": 999999}
-                    },
-                    "rangeLength": 999999,
                     "text": content
                 }]
             }
