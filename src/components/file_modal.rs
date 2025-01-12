@@ -43,7 +43,6 @@ impl FileModal {
         }
     }
 
-
     pub fn show(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
         if !self.show {
             return;
@@ -66,17 +65,22 @@ impl FileModal {
                             self.open_folder(log);
                         }
                         
-                        let project_path = self.project_path.clone();
-                        if project_path.is_some() {
+                        if self.project_path.is_some() {
                             if ui.button("New File").clicked() {
-                                if let Some(path) = &project_path {
-                                    self.start_create_item(false, path);
-                                }
+                                // Clone the path before using it to avoid borrowing issues
+                                let target_path = self.selected_folder.as_ref()
+                                    .or(self.project_path.as_ref())
+                                    .map(|p| p.clone())
+                                    .unwrap();
+                                self.start_create_item(false, &target_path);
                             }
                             if ui.button("New Folder").clicked() {
-                                if let Some(path) = &project_path {
-                                    self.start_create_item(true, path);
-                                }
+                                // Clone the path before using it to avoid borrowing issues
+                                let target_path = self.selected_folder.as_ref()
+                                    .or(self.project_path.as_ref())
+                                    .map(|p| p.clone())
+                                    .unwrap();
+                                self.start_create_item(true, &target_path);
                             }
                             if ui.button("Save").clicked() {
                                 self.save_current_file(code, current_file, log);
@@ -104,6 +108,7 @@ impl FileModal {
 
         self.handle_context_menu(ctx, log);
     }
+
     fn render_folder_contents(
         &mut self,
         ui: &mut egui::Ui,
@@ -167,8 +172,11 @@ impl FileModal {
                                 } else {
                                     self.expanded_folders.insert(path.clone());
                                 }
+                                // Update selected_folder when clicking on a directory
                                 self.selected_folder = Some(path.clone());
                             } else {
+                                // Clear selected_folder when clicking on a file
+                                self.selected_folder = Some(path.parent().unwrap().to_path_buf());
                                 match fs.open_file(&path) {
                                     Ok(content) => {
                                         *code = content;
