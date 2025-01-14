@@ -130,22 +130,24 @@ impl CodeEditor {
                         .and_then(|n| n.to_str())
                         .unwrap_or("untitled");
             
-                    let mut text = egui::RichText::new(file_name);
-                    if buffer.is_modified {
-                        text = text.italics();
-                    }
-                    if is_active {
-                        text = text.strong();
-                    }
+                    ui.horizontal(|ui| {
+                        let mut text = egui::RichText::new(file_name);
+                        if buffer.is_modified {
+                            text = text.italics();
+                        }
+                        if is_active {
+                            text = text.strong();
+                        }
             
-                    if ui.selectable_label(is_active, text).clicked() {
-                        self.active_buffer_index = Some(index);
-                    }
+                        if ui.selectable_label(is_active, text).clicked() {
+                            self.active_buffer_index = Some(index);
+                        }
             
-                    // Store the index to close instead of closing immediately
-                    if ui.small_button("×").clicked() {
-                        buffer_to_close = Some(index);
-                    }
+                        // Add the close button within the same horizontal layout
+                        if ui.small_button("×").clicked() {
+                            buffer_to_close = Some(index);
+                        }
+                    });
                 }
             });
 
@@ -197,6 +199,11 @@ impl CodeEditor {
                 }
             }
         });
+
+        if let Some(index) = buffer_to_close {
+            self.close_buffer(index);
+        }
+        
     }
 
     pub fn get_active_buffer(&self) -> Option<&Buffer> {
