@@ -185,7 +185,7 @@ impl IDE {
         }
 
         self.console_panel.update(ctx);
-        self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
+        self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
 
         egui::CentralPanel::default().show(ctx, |ui| {

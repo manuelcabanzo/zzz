@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use rfd::FileDialog;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::file_system::FileSystem;
+use crate::components::code_editor::CodeEditor;
 
 pub struct FileModal {
     pub show: bool,
@@ -43,7 +44,7 @@ impl FileModal {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, code: &mut String, current_file: &mut Option<String>, log: &mut dyn FnMut(&str)) {
+    pub fn show(&mut self, ctx: &egui::Context, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
         if !self.show {
             return;
         }
@@ -67,7 +68,6 @@ impl FileModal {
                         
                         if self.project_path.is_some() {
                             if ui.button("New File").clicked() {
-                                // Clone the path before using it to avoid borrowing issues
                                 let target_path = self.selected_folder.as_ref()
                                     .or(self.project_path.as_ref())
                                     .map(|p| p.clone())
@@ -75,7 +75,6 @@ impl FileModal {
                                 self.start_create_item(false, &target_path);
                             }
                             if ui.button("New Folder").clicked() {
-                                // Clone the path before using it to avoid borrowing issues
                                 let target_path = self.selected_folder.as_ref()
                                     .or(self.project_path.as_ref())
                                     .map(|p| p.clone())
@@ -83,7 +82,7 @@ impl FileModal {
                                 self.start_create_item(true, &target_path);
                             }
                             if ui.button("Save").clicked() {
-                                self.save_current_file(code, current_file, log);
+                                self.save_current_file(code_editor, log);
                             }
                         }
                     });
@@ -96,8 +95,8 @@ impl FileModal {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             self.render_folder_contents(
-                                ui, ctx, &project_path, &fs, code,
-                                current_file, log, 0,
+                                ui, ctx, &project_path, &fs, code_editor,
+                                log, 0,
                             );
                         });
                     } else {
@@ -115,11 +114,10 @@ impl FileModal {
         ctx: &egui::Context,
         folder: &Path,
         fs: &Rc<FileSystem>,
-        code: &mut String,
-        current_file: &mut Option<String>,
+        code_editor: &mut CodeEditor,
         log: &mut dyn FnMut(&str),
         indent_level: usize,
-    ) {       
+    ) { 
         if let Ok(entries) = fs.list_directory(folder) {
             for entry in entries {
                 let path = folder.join(&entry.name);
@@ -172,15 +170,12 @@ impl FileModal {
                                 } else {
                                     self.expanded_folders.insert(path.clone());
                                 }
-                                // Update selected_folder when clicking on a directory
                                 self.selected_folder = Some(path.clone());
                             } else {
-                                // Clear selected_folder when clicking on a file
                                 self.selected_folder = Some(path.parent().unwrap().to_path_buf());
                                 match fs.open_file(&path) {
                                     Ok(content) => {
-                                        *code = content;
-                                        *current_file = Some(path.to_str().unwrap().to_string());
+                                        code_editor.open_file(content, path.to_str().unwrap().to_string());
                                         log(&format!("Opened file: {}", path.display()));
                                     }
                                     Err(e) => log(&format!("Error opening file {}: {}", path.display(), e)),
@@ -216,8 +211,13 @@ impl FileModal {
 
                 if is_dir && (is_expanded || self.creating_item.as_ref().map_or(false, |(parent, _, _)| parent == &path)) {
                     self.render_folder_contents(
-                        ui, ctx, &path, fs, code,
-                        current_file, log, indent_level + 1,
+                        ui,
+                        ctx,
+                        &path,
+                        fs,
+                        code_editor,
+                        log,
+                        indent_level + 1
                     );
                 }
             }
@@ -378,15 +378,21 @@ impl FileModal {
             log("Folder opening already in progress");
         }
     }
-    fn save_current_file(&self, code: &str, current_file: &Option<String>, log: &mut dyn FnMut(&str)) {
-        if let Some(file) = current_file {
-            if let Some(fs) = &self.file_system {
-                let path = Path::new(file);
-                match fs.save_file(path, code) {
-                    Ok(_) => {
-                        log(&format!("Saved file: {}", file));
-                    },
-                    Err(e) => log(&format!("Error saving file {}: {}", file, e)),
+
+    fn save_current_file(&self, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
+        if let Some(buffer) = code_editor.get_active_buffer() {
+            if let Some(file_path) = &buffer.file_path {
+                if let Some(fs) = &self.file_system {
+                    let path = Path::new(file_path);
+                    match fs.save_file(path, &buffer.content) {
+                        Ok(_) => {
+                            log(&format!("Saved file: {}", file_path));
+                            if let Some(buffer) = code_editor.get_active_buffer_mut() {
+                                buffer.is_modified = false;
+                            }
+                        },
+                        Err(e) => log(&format!("Error saving file {}: {}", file_path, e)),
+                    }
                 }
             }
         } else {
