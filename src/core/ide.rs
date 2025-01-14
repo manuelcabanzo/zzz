@@ -7,11 +7,8 @@ use crate::components::{
     settings_modal::SettingsModal,
 };
 use tokio::sync::oneshot;
-use crate::core::lsp::LspManager;
 use tokio::runtime::Runtime;
 use std::sync::Arc;
-use lsp_types::{Diagnostic, Position};
-use tokio::sync::Mutex as TokioMutex;
 
 pub struct IDE {
     file_modal: FileModal,
@@ -23,13 +20,12 @@ pub struct IDE {
     show_emulator_panel: bool,
     pub shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
-    lsp_manager: Arc<TokioMutex<Option<LspManager>>>, // Change to single lsp_manager field
     pub tokio_runtime: Arc<Runtime>,
     runtime_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl IDE {
-    pub fn new(cc: &eframe::CreationContext<'_>, lsp_manager: Arc<TokioMutex<Option<LspManager>>>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
@@ -43,20 +39,12 @@ impl IDE {
             show_emulator_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            lsp_manager,
             tokio_runtime,
             runtime_handle: None,
         };
         
         ide.settings_modal.apply_theme(&cc.egui_ctx);
         ide
-    }
-
-    fn _map_diagnostics_to_strings(diagnostics: Vec<Diagnostic>) -> Vec<String> {
-        diagnostics
-            .into_iter()
-            .map(|diag| format!("{}: {}", diag.range.start.line, diag.message))
-            .collect()
     }
 
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, _ui:&mut egui::Ui) {
@@ -75,41 +63,6 @@ impl IDE {
             }
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
-            }
-            if i.key_pressed(egui::Key::Space) && i.modifiers.ctrl {
-                println!("Ctrl+Space pressed, requesting completions");
-                if let Some(current_file) = self.code_editor.current_file.clone() {
-                    let position = self.code_editor.get_cursor_position();
-                    println!("Current position: {:?}", position);
-                    
-                    let rt = Arc::clone(&self.tokio_runtime);
-                    let lsp = Arc::clone(&self.lsp_manager);
-                    let code = self.code_editor.code.clone();
-                    
-                    // Create a new task for handling completions
-                    let handle = rt.spawn(async move {
-                        let mut guard = lsp.lock().await;
-                        if let Some(manager) = guard.as_mut() {
-                            manager.update_document(current_file.clone(), code).await;
-                            
-                            match manager.request_completions(
-                                current_file,
-                                Position {
-                                    line: position.line as u32,
-                                    character: position.column as u32,
-                                }
-                            ).await {
-                                Ok(_) => println!("Completion request sent successfully"),
-                                Err(e) => eprintln!("Error requesting completions: {}", e),
-                            }
-                        }
-                    });
-
-                    // Store the handle
-                    if let Some(old_handle) = self.runtime_handle.replace(handle) {
-                        old_handle.abort();
-                    }
-                }
             }
         });
     }
@@ -235,41 +188,21 @@ impl IDE {
         self.file_modal.show(ctx, &mut self.code_editor.code, &mut self.code_editor.current_file, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
 
-        if let Ok(mut guard) = self.lsp_manager.try_lock() {
-            if let Some(lsp_manager) = guard.as_mut() {
-                if let Some(completions) = lsp_manager.get_completions() {
-                    println!("Received completions in IDE: {:?}", completions);
-                    // Update both completion lists
-                    self.code_editor.lsp_completions = completions.clone();
-                    self.code_editor.update_completions(
-                        completions.iter()
-                            .map(|item| item.label.clone())
-                            .collect()
-                    );
-                    self.code_editor.show_completions = true;
-                }
-            }
-        }
-
-        // Now pass `ui` correctly to the keyboard shortcut handling
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.handle_keyboard_shortcuts(ctx, ui); // Now `ui` is available here
+            self.handle_keyboard_shortcuts(ctx, ui);
             
-            let available_height = 760.0; // Total available height for the central panel
-            let console_height = 280.0;  // Height of the console panel
-            let editor_height = if self.show_console_panel {
-                available_height - console_height
-            } else {
-                available_height
-            };
-        
-            // Set a fixed height for the editor panel
-            egui::ScrollArea::vertical()
-                .max_height(editor_height)
-                .show(ui, |ui| {
-                    ui.set_height(editor_height); // Ensures the editor panel height is fixed
-                    self.code_editor.show(ui, available_height); // Render the code editor
-                });
+            // Calculate available height by getting the panel's size
+            let available_space = ui.available_size();
+            let console_height = if self.show_console_panel { 280.0 } else { 0.0 };
+            let editor_height = available_space.y - console_height;
+            
+            // Remove the ScrollArea and let the CodeEditor handle its own scrolling
+            ui.with_layout(
+                egui::Layout::top_down(egui::Align::LEFT).with_main_justify(true),
+                |ui| {
+                    self.code_editor.show(ui, editor_height);
+                },
+            );
         });
     
         // Handle the console panel and settings modal as well
