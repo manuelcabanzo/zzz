@@ -362,16 +362,23 @@ impl FileModal {
                     self.is_initializing.store(false, Ordering::SeqCst);
                     return;
                 }
-                self.project_path = Some(folder_path.clone());
                 
-                // Create FileSystem with clone method
-                let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
-                self.file_system = Some(fs.clone());
-                
+                // Clear existing state first
                 self.expanded_folders.clear();
+                self.selected_folder = None;
+                self.selected_item = None;
+                self.editing_item = None;
+                self.creating_item = None;
+                self.context_menu = None;
+                
+                // Set up new project
+                self.project_path = Some(folder_path.clone());
+                let fs = Rc::new(FileSystem::new(folder_path.to_str().unwrap()));
+                self.file_system = Some(fs);
+                
+                // Expand root folder
                 self.expanded_folders.insert(folder_path.clone());
                 log(&format!("Opened project: {}", folder_path.display()));
-
             }
             self.is_initializing.store(false, Ordering::SeqCst);
         } else {

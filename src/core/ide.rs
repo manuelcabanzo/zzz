@@ -33,9 +33,7 @@ impl IDE {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
-        // Load saved state
-        let state = AppState::load();
-        
+        // Create IDE instance first
         let mut ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
@@ -52,11 +50,13 @@ impl IDE {
             ai_assistant: AIAssistant::new(String::new()),
         };
         
-        // Apply saved state
+        // Load and apply saved state
+        let state = AppState::load();
         state.apply_to_ide(&mut ide);
         
-        // Apply theme
+        // Apply theme after state is loaded
         ide.settings_modal.apply_theme(&cc.egui_ctx);
+        
         ide
     }
 
@@ -204,12 +204,14 @@ impl IDE {
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
 
-        egui::SidePanel::right("ai_assistant_panel")
-            .resizable(true)
-            .default_width(300.0)
-            .show(ctx, |ui| {
-                self.ai_assistant.show(ui, &mut self.code_editor);
-            });
+        if self.show_ai_panel {
+            egui::SidePanel::right("ai_panel")
+                .resizable(true)
+                .default_width(300.0)
+                .show_animated(ctx, self.show_ai_panel,  |ui| {
+                    self.ai_assistant.show(ui, &mut self.code_editor);
+                });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.handle_keyboard_shortcuts(ctx, ui);

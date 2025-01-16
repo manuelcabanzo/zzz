@@ -5,6 +5,9 @@ use std::fs;
 use crate::utils::themes::Theme;
 use crate::core::ide::IDE;
 use crate::components::code_editor::{Buffer, CursorPosition};
+use std::path::Path;
+use std::rc::Rc;
+use crate::core::file_system::FileSystem;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppState {
@@ -101,13 +104,13 @@ impl AppState {
     }
 
     pub fn update_from_ide(&mut self, ide: &IDE) {
-        // Update state from IDE instance
+        // Existing state updates
         self.last_project_path = ide.file_modal.project_path.clone();
         self.console_panel_visible = ide.show_console_panel;
         self.emulator_panel_visible = ide.show_emulator_panel;
         self.current_theme = ide.settings_modal.current_theme.clone();
         self.ai_api_key = ide.settings_modal.get_api_key();
-        
+
         // Save buffer states
         self.open_buffers = ide.code_editor.buffers.iter().map(|buffer| {
             BufferState {
@@ -115,29 +118,45 @@ impl AppState {
                 cursor_position: buffer.cursor_position.clone(),
             }
         }).collect();
-        
+
         self.active_buffer_index = ide.code_editor.active_buffer_index;
     }
 
     pub fn apply_to_ide(&self, ide: &mut IDE) {
-        // Apply saved state to IDE instance
-        ide.file_modal.project_path = self.last_project_path.clone();
+        // First initialize the file system if we have a project path
+        if let Some(project_path) = &self.last_project_path {
+            if project_path.exists() {  // Add existence check
+                let fs = Rc::new(FileSystem::new(project_path.to_str().unwrap()));
+                ide.file_modal.file_system = Some(fs);
+                ide.file_modal.project_path = Some(project_path.clone());
+                
+                // Expand the root folder
+                ide.file_modal.expanded_folders.insert(project_path.clone());
+            }
+        }
+
+        // Apply the rest of the saved state
         ide.show_console_panel = self.console_panel_visible;
         ide.show_emulator_panel = self.emulator_panel_visible;
         ide.settings_modal.current_theme = self.current_theme.clone();
         ide.settings_modal.set_api_key(self.ai_api_key.clone());
-        
+
         // Restore buffers
         for buffer_state in &self.open_buffers {
-            if let Ok(content) = fs::read_to_string(&buffer_state.file_path) {
-                let mut buffer = Buffer::new();
-                buffer.file_path = Some(buffer_state.file_path.clone());
-                buffer.content = content;
-                buffer.cursor_position = buffer_state.cursor_position.clone();
-                ide.code_editor.buffers.push(buffer);
+            let path = Path::new(&buffer_state.file_path);
+            if path.exists() {  // Add existence check
+                if let Some(fs) = &ide.file_modal.file_system {
+                    if let Ok(content) = fs.open_file(path) {
+                        let mut buffer = Buffer::new();
+                        buffer.file_path = Some(buffer_state.file_path.clone());
+                        buffer.content = content;
+                        buffer.cursor_position = buffer_state.cursor_position.clone();
+                        ide.code_editor.buffers.push(buffer);
+                    }
+                }
             }
         }
-        
+
         ide.code_editor.active_buffer_index = self.active_buffer_index;
     }
 }

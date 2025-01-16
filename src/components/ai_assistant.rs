@@ -1,4 +1,3 @@
-// In components/ai_assistant.rs
 use eframe::egui;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
