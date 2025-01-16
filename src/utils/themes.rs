@@ -1,6 +1,7 @@
 use egui::{Color32, FontData, Stroke, Rounding, epaint::Shadow, Vec2};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
     pub background_color: Color32,
     pub text_color: Color32,

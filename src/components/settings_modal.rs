@@ -6,12 +6,15 @@ pub enum SettingsTab {
     Personalization,
     General,
     Editor,
+    AI, // Add new tab for AI settings
 }
 
 pub struct SettingsModal {
     pub show: bool,
     settings_tab: SettingsTab,
-    current_theme: Theme,
+    pub current_theme: Theme,
+    api_key: String, // Add field for API key
+    api_key_changed: bool, // Track if API key has changed
 }
 
 impl SettingsModal {
@@ -20,7 +23,26 @@ impl SettingsModal {
             show: false,
             settings_tab: SettingsTab::Personalization,
             current_theme: Theme::default(),
+            api_key: String::new(),
+            api_key_changed: false,
         }
+    }
+
+    // Add getter for API key
+    pub fn get_api_key(&self) -> String {
+        self.api_key.clone()
+    }
+
+    // Add setter for API key
+    pub fn set_api_key(&mut self, key: String) {
+        self.api_key = key;
+    }
+
+    // Add method to check and reset the changed flag
+    pub fn take_api_key_changed(&mut self) -> bool {
+        let changed = self.api_key_changed;
+        self.api_key_changed = false;
+        changed
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
@@ -35,7 +57,6 @@ impl SettingsModal {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-
                 ui.set_min_size(modal_size);
                 ui.heading("Settings");
                 ui.add_space(10.0);
@@ -45,6 +66,7 @@ impl SettingsModal {
                         ui.selectable_value(&mut self.settings_tab, SettingsTab::Personalization, "Personalization");
                         ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "General");
                         ui.selectable_value(&mut self.settings_tab, SettingsTab::Editor, "Editor");
+                        ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant"); // Add new tab
                     });
                 });
 
@@ -53,9 +75,25 @@ impl SettingsModal {
                         SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                         SettingsTab::General => self.show_general_settings(ui),
                         SettingsTab::Editor => self.show_editor_settings(ui),
+                        SettingsTab::AI => self.show_ai_settings(ui), // Add new tab handler
                     }
                 });    
             });
+    }
+
+    fn show_ai_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("AI Assistant Settings");
+        ui.add_space(10.0);
+        
+        ui.horizontal(|ui| {
+            ui.label("Together AI API Key:");
+            if ui.text_edit_singleline(&mut self.api_key).changed() {
+                self.api_key_changed = true;
+            }
+        });
+        
+        ui.add_space(5.0);
+        ui.label("Your API key is stored locally and used only for AI assistant functionality.");
     }
 
     fn show_personalization_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

@@ -5,23 +5,27 @@ use crate::components::{
     console_panel::ConsolePanel,
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
+    ai_assistant::AIAssistant,
 };
+use crate::core::app_state::AppState;
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 use std::sync::Arc;
 
 pub struct IDE {
-    file_modal: FileModal,
-    code_editor: CodeEditor,
-    console_panel: ConsolePanel,
-    emulator_panel: EmulatorPanel,
-    settings_modal: SettingsModal,
-    show_console_panel: bool,
-    show_emulator_panel: bool,
+    pub file_modal: FileModal,
+    pub code_editor: CodeEditor,
+    pub console_panel: ConsolePanel,
+    pub emulator_panel: EmulatorPanel,
+    pub settings_modal: SettingsModal,
+    pub show_console_panel: bool,
+    pub show_emulator_panel: bool,
+    pub show_ai_panel: bool,
     pub shutdown_sender: Option<oneshot::Sender<()>>,
     title: String,
     pub tokio_runtime: Arc<Runtime>,
     runtime_handle: Option<tokio::task::JoinHandle<()>>,
+    ai_assistant: AIAssistant,
 }
 
 impl IDE {
@@ -29,7 +33,10 @@ impl IDE {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
-        let ide = Self {
+        // Load saved state
+        let state = AppState::load();
+        
+        let mut ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
             console_panel: ConsolePanel::new(),
@@ -37,12 +44,18 @@ impl IDE {
             settings_modal: SettingsModal::new(),
             show_console_panel: false,
             show_emulator_panel: false,
+            show_ai_panel: false,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
             tokio_runtime,
             runtime_handle: None,
+            ai_assistant: AIAssistant::new(String::new()),
         };
         
+        // Apply saved state
+        state.apply_to_ide(&mut ide);
+        
+        // Apply theme
         ide.settings_modal.apply_theme(&cc.egui_ctx);
         ide
     }
@@ -57,6 +70,9 @@ impl IDE {
             }
             if i.key_pressed(egui::Key::Num3) && i.modifiers.ctrl {
                 self.show_console_panel = !self.show_console_panel;
+            }
+            if i.key_pressed(egui::Key::Num4) && i.modifiers.ctrl {
+                self.show_ai_panel = !self.show_ai_panel;
             }
             if i.key_pressed(egui::Key::M) && i.modifiers.ctrl {
                 self.settings_modal.show = !self.settings_modal.show;
@@ -188,6 +204,13 @@ impl IDE {
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
 
+        egui::SidePanel::right("ai_assistant_panel")
+            .resizable(true)
+            .default_width(300.0)
+            .show(ctx, |ui| {
+                self.ai_assistant.show(ui, &mut self.code_editor);
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             self.handle_keyboard_shortcuts(ctx, ui);
             
@@ -222,12 +245,18 @@ impl IDE {
 
 impl Drop for IDE {
     fn drop(&mut self) {
-        // Abort any pending completion requests
+        // Save state before shutting down
+        let mut state = AppState::default();
+        state.update_from_ide(self);
+        if let Err(e) = state.save() {
+            eprintln!("Failed to save application state: {}", e);
+        }
+        
+        // Original drop implementation...
         if let Some(handle) = self.runtime_handle.take() {
             handle.abort();
         }
         
-        // Send shutdown signal
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(());
         }

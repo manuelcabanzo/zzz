@@ -5,8 +5,10 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
 use std::path::Path;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy)]
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CursorPosition {
     pub line: usize,
     pub column: usize,
