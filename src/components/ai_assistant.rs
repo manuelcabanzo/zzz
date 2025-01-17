@@ -26,30 +26,6 @@ struct TogetherAIRequest {
     stop: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum TogetherAIResponse {
-    Success {
-        output: OutputContent,
-    },
-    Error {
-        error: ErrorContent,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct OutputContent {
-    text: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-struct ErrorContent {
-    message: String,
-    #[serde(rename = "type")]
-    #[serde(default)]
-    _error_type: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
     role: String,
@@ -215,32 +191,6 @@ impl AIAssistant {
         }
     }
 
-    fn format_prompt(&self, file_content: &str, question: &str) -> String {
-        let chat_context: String = self.chat_history
-            .iter()
-            .take(self.context_window)
-            .map(|msg| {
-                if msg.is_user {
-                    format!("Human: {}\n", msg.content)
-                } else {
-                    format!("Assistant: {}\n", msg.content)
-                }
-            })
-            .collect();
-
-        format!(
-            "You are an AI programming assistant in an IDE. You have access to the current file content.\n\
-            Be direct and concise. Focus on practical solutions.\n\n\
-            Current File Content:\n```\n{}\n```\n\n\
-            Previous conversation:\n{}\n\
-            Human: {}\n\
-            Assistant:",
-            file_content,
-            chat_context,
-            question
-        )
-    }
-
     fn add_message(&mut self, content: String, is_user: bool) {
         let timestamp = Local::now().format("%H:%M").to_string();
         println!("Adding message - Content: {}, User: {}", content, is_user);
@@ -336,13 +286,21 @@ impl AIAssistant {
                                             .fill(bg_color)
                                             .outer_margin(egui::vec2(8.0, 4.0))
                                             .show(ui, |ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(egui::RichText::new(&message.timestamp)
-                                                        .small()
-                                                        .color(egui::Color32::GRAY));
-                                                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                                        ui.label(egui::RichText::new(&message.content)
-                                                            .color(text_color));
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(egui::RichText::new(&message.timestamp)
+                                                            .small()
+                                                            .color(egui::Color32::GRAY));
+                                                    });
+                                                    
+                                                    // Using correct enum value Align::LEFT
+                                                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                                        ui.add(
+                                                            egui::TextEdit::multiline(&mut message.content.as_str())
+                                                                .desired_width(ui.available_width() - 16.0)
+                                                                .interactive(false)
+                                                                .frame(false)
+                                                        );
                                                     });
                                                 });
                                             });

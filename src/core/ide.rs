@@ -212,8 +212,10 @@ impl IDE {
         if self.show_ai_panel {
             egui::SidePanel::right("ai_panel")
                 .resizable(true)
-                .default_width(300.0)
-                .show_animated(ctx, self.show_ai_panel,  |ui| {
+                .max_width(400.0)  // Add maximum width
+                .min_width(300.0)  // Add minimum width
+                .default_width(350.0)
+                .show_animated(ctx, self.show_ai_panel, |ui| {
                     self.ai_assistant.show(ui, &mut self.code_editor);
                 });
         }
