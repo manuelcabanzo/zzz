@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use std::collections::VecDeque;
 use chrono::Local;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
-// Previous structs remain the same...
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     content: String,
@@ -19,17 +20,56 @@ struct TogetherAIRequest {
     prompt: String,
     max_tokens: u32,
     temperature: f32,
+    top_p: f32,
+    top_k: u32,
+    repetition_penalty: f32,
     stop: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct TogetherAIResponse {
-    output: Output,
+#[serde(untagged)]
+enum TogetherAIResponse {
+    Success {
+        output: OutputContent,
+    },
+    Error {
+        error: ErrorContent,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct Output {
+struct OutputContent {
     text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ErrorContent {
+    message: String,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    _error_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatChoice {
+    message: ChatMessage,
 }
 
 pub struct AIAssistant {
@@ -44,10 +84,14 @@ pub struct AIAssistant {
     context_window: usize,
     debug_messages: VecDeque<String>,
     panel_height: f32,
+    runtime: Arc<Runtime>,
 }
 
 impl AIAssistant {
-    pub fn new(api_key: String) -> Self {
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY_MS: u64 = 1000;
+
+    pub fn new(api_key: String, runtime: Arc<Runtime>) -> Self {
         println!("Initializing AI Assistant with API key length: {}", api_key.len());
         let (tx, rx) = mpsc::channel(32);
         
@@ -63,10 +107,106 @@ impl AIAssistant {
             context_window: 5,
             debug_messages: VecDeque::with_capacity(10),
             panel_height: 600.0,
+            runtime,
         }
     }
 
-    // Previous helper methods remain the same...
+    fn format_chat_messages(&self, file_content: &str, question: &str) -> Vec<ChatMessage> {
+        let mut messages = Vec::new();
+        
+        // System message to set the context
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: format!(
+                "You are an AI programming assistant in an IDE. You have access to the current file content:\n```\n{}\n```\n\
+                Be direct and concise. Focus on practical solutions.",
+                file_content
+            ),
+        });
+
+        // Add previous conversation context
+        for msg in self.chat_history.iter().take(self.context_window) {
+            messages.push(ChatMessage {
+                role: if msg.is_user { "user" } else { "assistant" }.to_string(),
+                content: msg.content.clone(),
+            });
+        }
+
+        // Add the current question
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: question.to_string(),
+        });
+
+        messages
+    }
+
+    async fn make_api_request(
+        client: &Client,
+        api_key: &str,
+        request: &ChatRequest,
+    ) -> Result<String, String> {
+        let mut retries = 0;
+        
+        while retries < Self::MAX_RETRIES {
+            println!("Attempt {} of {}", retries + 1, Self::MAX_RETRIES);
+            
+            let result = client
+                .post("https://api.together.xyz/v1/chat/completions")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(request)
+                .timeout(std::time::Duration::from_secs(30))
+                .send()
+                .await;
+
+            match result {
+                Ok(response) => {
+                    let status = response.status();
+                    println!("API Response Status: {}", status);
+                    
+                    if status.is_success() {
+                        match response.text().await {
+                            Ok(text) => {
+                                println!("Raw API Response: {}", text);
+                                return Ok(text);
+                            }
+                            Err(e) => {
+                                return Err(format!("Failed to read response: {}", e));
+                            }
+                        }
+                    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        println!("Rate limit exceeded, waiting before retry...");
+                    } else if status == reqwest::StatusCode::INTERNAL_SERVER_ERROR {
+                        println!("Internal server error, attempting retry...");
+                    } else {
+                        return Err(format!("API returned error status: {}", status));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        println!("Request timed out, attempting retry...");
+                    } else if e.is_connect() {
+                        println!("Connection error, attempting retry...");
+                    } else {
+                        return Err(format!("Network error: {}", e));
+                    }
+                }
+            }
+
+            retries += 1;
+            if retries < Self::MAX_RETRIES {
+                tokio::time::sleep(std::time::Duration::from_millis(Self::RETRY_DELAY_MS)).await;
+            }
+        }
+
+        Err("Max retries exceeded".to_string())
+    }
+
+    pub fn is_api_key_valid(&self) -> bool {
+        self.api_key.len() >= 32 && !self.api_key.chars().all(|c| c.is_whitespace())
+    }
+
     fn add_debug_message(&mut self, msg: String) {
         println!("AI Assistant Debug: {}", msg);
         self.debug_messages.push_back(msg);
@@ -90,7 +230,8 @@ impl AIAssistant {
 
         format!(
             "You are an AI programming assistant in an IDE. You have access to the current file content.\n\
-            Current File Content:\n{}\n\n\
+            Be direct and concise. Focus on practical solutions.\n\n\
+            Current File Content:\n```\n{}\n```\n\n\
             Previous conversation:\n{}\n\
             Human: {}\n\
             Assistant:",
@@ -124,7 +265,15 @@ impl AIAssistant {
     pub fn show(&mut self, ui: &mut egui::Ui, code_editor: &mut super::code_editor::CodeEditor) {
         let available_height = ui.available_height();
         self.panel_height = available_height;
-
+    
+        if !self.is_api_key_valid() {
+            ui.colored_label(
+                egui::Color32::RED, 
+                "Invalid API key format. Please check your Together AI API key in Settings"
+            );
+            return;
+        }
+        
         egui::Frame::none()
             .fill(ui.style().visuals.window_fill())
             .show(ui, |ui| {
@@ -146,16 +295,17 @@ impl AIAssistant {
                                 ui.label(msg);
                             }
                         });
-
+    
                     if self.api_key.is_empty() {
-                        ui.colored_label(egui::Color32::RED, 
+                        ui.colored_label(
+                            egui::Color32::RED, 
                             "Please configure your Together AI API key in Settings"
                         );
                         return;
                     }
-
+    
                     ui.add_space(8.0);
-
+    
                     // Chat area
                     let chat_height = self.panel_height - 200.0;
                     egui::Frame::none()
@@ -181,7 +331,7 @@ impl AIAssistant {
                                         } else {
                                             (ui.style().visuals.code_bg_color, egui::Color32::LIGHT_BLUE)
                                         };
-
+    
                                         egui::Frame::none()
                                             .fill(bg_color)
                                             .outer_margin(egui::vec2(8.0, 4.0))
@@ -200,9 +350,9 @@ impl AIAssistant {
                                     }
                                 });
                         });
-
+    
                     ui.add_space(8.0);
-
+    
                     // Input area
                     ui.horizontal(|ui| {
                         let text_edit = ui.add_sized(
@@ -211,7 +361,7 @@ impl AIAssistant {
                                 .hint_text("Ask about your code or request changes...")
                                 .desired_rows(3)
                         );
-
+    
                         ui.vertical(|ui| {
                             ui.add_space(20.0);
                             let send_button = ui.add_sized(
@@ -221,7 +371,7 @@ impl AIAssistant {
                                         .size(16.0)
                                 )
                             );
-
+    
                             if (text_edit.lost_focus() && 
                                 ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) || 
                                 send_button.clicked()) && 
@@ -232,56 +382,51 @@ impl AIAssistant {
                                 self.add_message(question.clone(), true);
                                 self.is_loading = true;
                                 
-                                // API call setup
                                 let file_content = code_editor.get_active_content();
-                                let prompt = self.format_prompt(&file_content, &question);
+                                let messages = self.format_chat_messages(&file_content, &question);
                                 
                                 let tx = self.tx.clone();
                                 let api_key = self.api_key.clone();
                                 let client = self.http_client.clone();
-
-                                tokio::spawn(async move {
-                                    let request = TogetherAIRequest {
-                                        model: "togethercomputer/CodeLlama-34b-Instruct".to_string(),
-                                        prompt: prompt.clone(),
-                                        max_tokens: 2048,
-                                        temperature: 0.7,
-                                        stop: vec!["Human:".to_string(), "\nHuman:".to_string()],
+    
+                                self.runtime.spawn(async move {
+                                    let request = ChatRequest {
+                                        model: "deepseek-ai/DeepSeek-V3".to_string(),
+                                        messages,
                                     };
-
-                                    match client
-                                        .post("https://api.together.xyz/inference")
-                                        .header("Authorization", format!("Bearer {}", api_key))
-                                        .json(&request)
-                                        .send()
-                                        .await
-                                    {
-                                        Ok(response) => {
-                                            match response.error_for_status() {
+                                
+                                    println!("Sending request to Together AI: {:?}", request);
+                                
+                                    let api_response = Self::make_api_request(&client, &api_key, &request).await;
+                                    
+                                    match api_response {
+                                        Ok(text) => {
+                                            match serde_json::from_str::<ChatResponse>(&text) {
                                                 Ok(response) => {
-                                                    match response.json::<TogetherAIResponse>().await {
-                                                        Ok(ai_response) => {
-                                                            let _ = tx.send(ai_response.output.text.trim().to_string()).await;
-                                                        }
-                                                        Err(e) => {
-                                                            let _ = tx.send(format!("Error parsing response: {}", e)).await;
-                                                        }
+                                                    if let Some(choice) = response.choices.first() {
+                                                        let _ = tx.send(choice.message.content.trim().to_string()).await;
+                                                    } else {
+                                                        let _ = tx.send("No response generated".to_string()).await;
                                                     }
-                                                }
+                                                },
                                                 Err(e) => {
-                                                    let _ = tx.send(format!("API error: {}", e)).await;
+                                                    let _ = tx.send(format!(
+                                                        "Error parsing response: {}. Raw response: {}", 
+                                                        e, 
+                                                        text
+                                                    )).await;
                                                 }
                                             }
-                                        }
+                                        },
                                         Err(e) => {
-                                            let _ = tx.send(format!("Network error: {}", e)).await;
+                                            let _ = tx.send(format!("Request failed: {}", e)).await;
                                         }
                                     }
                                 });
                             }
                         });
                     });
-
+    
                     // Handle responses
                     while let Ok(response) = self.rx.try_recv() {
                         if response.starts_with("Error") || 

@@ -43,14 +43,14 @@ impl IDE {
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
-            show_console_panel: state.console_panel_visible,    // Initialize from state
-            show_emulator_panel: state.emulator_panel_visible, // Initialize from state
-            show_ai_panel: state.ai_assistant_panel_visible,   // Initialize from state
+            show_console_panel: state.console_panel_visible,
+            show_emulator_panel: state.emulator_panel_visible,
+            show_ai_panel: state.ai_assistant_panel_visible,
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
             tokio_runtime: tokio_runtime.clone(),
             runtime_handle: None,
-            ai_assistant: AIAssistant::new(state.ai_api_key.clone()), // Initialize with saved API key
+            ai_assistant: AIAssistant::new(state.ai_api_key.clone(), tokio_runtime.clone()),
         };
         
         // Enter runtime after creation
