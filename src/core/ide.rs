@@ -25,7 +25,7 @@ pub struct IDE {
     title: String,
     pub tokio_runtime: Arc<Runtime>,
     runtime_handle: Option<tokio::task::JoinHandle<()>>,
-    ai_assistant: AIAssistant,
+    pub ai_assistant: AIAssistant,
 }
 
 impl IDE {
@@ -33,25 +33,30 @@ impl IDE {
         let (shutdown_sender, _shutdown_receiver) = oneshot::channel();
         let tokio_runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
         
-        // Create IDE instance first
+        // Load state first
+        let state = AppState::load();
+        
+        // Create IDE instance with state-derived values
         let mut ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
             console_panel: ConsolePanel::new(),
             emulator_panel: EmulatorPanel::new(),
             settings_modal: SettingsModal::new(),
-            show_console_panel: false,
-            show_emulator_panel: false,
-            show_ai_panel: false,
+            show_console_panel: state.console_panel_visible,    // Initialize from state
+            show_emulator_panel: state.emulator_panel_visible, // Initialize from state
+            show_ai_panel: state.ai_assistant_panel_visible,   // Initialize from state
             shutdown_sender: Some(shutdown_sender),
             title: "ZZZ IDE".to_string(),
-            tokio_runtime,
+            tokio_runtime: tokio_runtime.clone(),
             runtime_handle: None,
-            ai_assistant: AIAssistant::new(String::new()),
+            ai_assistant: AIAssistant::new(state.ai_api_key.clone()), // Initialize with saved API key
         };
         
-        // Load and apply saved state
-        let state = AppState::load();
+        // Enter runtime after creation
+        let _guard = tokio_runtime.enter();
+        
+        // Apply remaining state
         state.apply_to_ide(&mut ide);
         
         // Apply theme after state is loaded
@@ -230,6 +235,16 @@ impl IDE {
             );
         });
     
+        if self.settings_modal.take_api_key_changed() {
+            let new_key = self.settings_modal.get_api_key();
+            self.ai_assistant.update_api_key(new_key);
+            
+            // Update app state
+            let mut app_state = AppState::load();
+            app_state.ai_api_key = self.settings_modal.get_api_key();
+            let _ = app_state.save();
+        }
+        
         // Handle the console panel and settings modal as well
         if self.show_console_panel {
             egui::TopBottomPanel::bottom("console_panel")

@@ -9,6 +9,7 @@ use std::path::Path;
 use std::rc::Rc;
 use crate::core::file_system::FileSystem;
 
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppState {
     // File and editor state
@@ -21,6 +22,7 @@ pub struct AppState {
     pub window_size: (f32, f32),
     pub console_panel_visible: bool,
     pub emulator_panel_visible: bool,
+    pub ai_assistant_panel_visible: bool,
     
     // Settings
     pub current_theme: Theme,
@@ -66,6 +68,7 @@ impl Default for AppState {
             window_size: (800.0, 600.0),
             console_panel_visible: false,
             emulator_panel_visible: false,
+            ai_assistant_panel_visible: false,
             current_theme: Theme::default(),
             ai_api_key: String::new(),
         }
@@ -108,6 +111,7 @@ impl AppState {
         self.last_project_path = ide.file_modal.project_path.clone();
         self.console_panel_visible = ide.show_console_panel;
         self.emulator_panel_visible = ide.show_emulator_panel;
+        self.ai_assistant_panel_visible = ide.show_ai_panel;  // Add this line
         self.current_theme = ide.settings_modal.current_theme.clone();
         self.ai_api_key = ide.settings_modal.get_api_key();
 
@@ -125,7 +129,7 @@ impl AppState {
     pub fn apply_to_ide(&self, ide: &mut IDE) {
         // First initialize the file system if we have a project path
         if let Some(project_path) = &self.last_project_path {
-            if project_path.exists() {  // Add existence check
+            if project_path.exists() {
                 let fs = Rc::new(FileSystem::new(project_path.to_str().unwrap()));
                 ide.file_modal.file_system = Some(fs);
                 ide.file_modal.project_path = Some(project_path.clone());
@@ -138,13 +142,17 @@ impl AppState {
         // Apply the rest of the saved state
         ide.show_console_panel = self.console_panel_visible;
         ide.show_emulator_panel = self.emulator_panel_visible;
+        ide.show_ai_panel = self.ai_assistant_panel_visible;  // Make sure this line is present
         ide.settings_modal.current_theme = self.current_theme.clone();
         ide.settings_modal.set_api_key(self.ai_api_key.clone());
+
+        // Also update the AI Assistant's API key
+        ide.ai_assistant.update_api_key(self.ai_api_key.clone());  // Add this line
 
         // Restore buffers
         for buffer_state in &self.open_buffers {
             let path = Path::new(&buffer_state.file_path);
-            if path.exists() {  // Add existence check
+            if path.exists() {
                 if let Some(fs) = &ide.file_modal.file_system {
                     if let Ok(content) = fs.open_file(path) {
                         let mut buffer = Buffer::new();
