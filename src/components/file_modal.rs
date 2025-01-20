@@ -123,18 +123,36 @@ impl FileModal {
                 let path = folder.join(&entry.name);
                 let is_dir = entry.is_dir;
                 let is_expanded = self.expanded_folders.contains(&path);
-
+    
                 ui.horizontal(|ui| {
                     ui.add_space(indent_level as f32 * 20.0);
-
+    
                     let is_editing = self.editing_item.as_ref().map_or(false, |(edit_path, _)| edit_path == &path);
                     let is_selected = self.selected_item.as_ref() == Some(&path);
-
+    
                     if is_editing {
                         if let Some((_, ref mut name)) = self.editing_item {
                             let response = ui.text_edit_singleline(name);
+                            
+                            // Request focus if it's the first time
+                            if self.new_item_focus {
+                                response.request_focus();
+                                self.new_item_focus = false; // After focusing, reset the flag
+                            }
+    
+                            // Check for pressing Enter (to finish rename) or Esc (to cancel rename)
                             if response.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                 self.finish_rename(log);
+                            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                                self.cancel_rename();
+                            }
+    
+                            // Check for clicking outside the input field
+                            if response.clicked() {
+                                // Do nothing, it was clicked inside the input box
+                            } else if response.lost_focus() {
+                                // Clicked outside the input box, cancel rename
+                                self.cancel_rename();
                             }
                         }
                     } else {
@@ -143,25 +161,25 @@ impl FileModal {
                         } else {
                             format!(" {}", entry.name)
                         };
-
+    
                         let text_color = if is_selected {
                             egui::Color32::from_rgb(100, 100, 255)
                         } else {
                             ui.style().visuals.text_color()
                         };
-
+    
                         let label = if is_dir {
                             egui::RichText::new(text).italics().color(text_color)
                         } else {
                             egui::RichText::new(text).color(text_color)
                         };
-
+    
                         let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
-
+    
                         if response.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-
+    
                         if response.clicked() {
                             self.selected_item = Some(path.clone());
                             if is_dir {
@@ -182,11 +200,11 @@ impl FileModal {
                                 }
                             }
                         }
-
+    
                         if response.double_clicked() {
                             self.start_rename(&path);
                         }
-
+    
                         if response.secondary_clicked() {
                             if let Some(pointer_pos) = ctx.pointer_interact_pos() {
                                 let screen_pos = pointer_pos;
@@ -197,7 +215,7 @@ impl FileModal {
                                 });
                             }
                         }
-
+    
                         if response.hovered() {
                             let hover_text = if is_dir {
                                 "Click to expand/collapse, double-click to rename"
@@ -208,7 +226,7 @@ impl FileModal {
                         }
                     }
                 });
-
+    
                 if is_dir && (is_expanded || self.creating_item.as_ref().map_or(false, |(parent, _, _)| parent == &path)) {
                     self.render_folder_contents(
                         ui,
@@ -224,7 +242,7 @@ impl FileModal {
         } else {
             log(&format!("Error reading directory: {}", folder.display()));
         }
-
+    
         // Render item being created
         let mut item_created = false;
         if let Some((parent, name, _is_folder)) = &mut self.creating_item {
@@ -247,9 +265,12 @@ impl FileModal {
                 self.finish_create_item(&parent, &name, is_folder, log);
             }
         }
+    }    
+    
+    fn cancel_rename(&mut self) {
+        self.editing_item = None;
     }
-    
-    
+
     fn handle_context_menu(&mut self, ctx: &egui::Context, log: &mut dyn FnMut(&str)) {
         if let Some(menu_state) = &self.context_menu {
             let pos = menu_state.pos;
@@ -300,6 +321,7 @@ impl FileModal {
     fn start_rename(&mut self, path: &Path) {
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
         self.editing_item = Some((path.to_path_buf(), name));
+        self.new_item_focus = true; // Mark that we need to focus on the input field
     }
 
     fn finish_rename(&mut self, log: &mut dyn FnMut(&str)) {

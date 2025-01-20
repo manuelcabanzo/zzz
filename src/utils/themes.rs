@@ -42,7 +42,7 @@ impl Theme {
             active_color: Color32::from_rgb(200, 200, 200),
             widget_border_color: Color32::from_rgb(180, 180, 180),
             widget_border_width: 1.0,
-            widget_rounding: Rounding::same(4.0),
+            widget_rounding: Rounding::same(0.0), // Changed to same(0.0)
         }
     }
 
@@ -67,7 +67,7 @@ impl Theme {
             active_color: Color32::from_rgb(60, 60, 70),
             widget_border_color: Color32::from_rgb(70, 70, 80),
             widget_border_width: 1.0,
-            widget_rounding: Rounding::same(4.0),
+            widget_rounding: Rounding::same(0.0), // Changed to same(0.0)
         }
     }
 
@@ -92,19 +92,21 @@ impl Theme {
             active_color: Color32::from_rgb(220, 220, 235),
             widget_border_color: Color32::from_rgb(180, 180, 220),
             widget_border_width: 1.0,
-            widget_rounding: Rounding::same(6.0),
+            widget_rounding: Rounding::same(0.0), // Changed to same(0.0)
         }
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::purple()
     }
 }
 
 pub fn custom_theme(ctx: &egui::Context, theme: &Theme) -> egui::Visuals {
     let mut visuals = egui::Visuals::light();
+    
+    // Set window rounding to zero
+    visuals.window_rounding = Rounding::same(0.0);
+    
+    // Remove rounding from popup windows and tooltips
+    visuals.popup_shadow.blur = 0.0;
+    visuals.popup_shadow.spread = 0.0;
+    
     visuals.window_fill = theme.background_color;
     visuals.panel_fill = theme.panel_fill;
     visuals.override_text_color = Some(theme.text_color);
@@ -112,10 +114,16 @@ pub fn custom_theme(ctx: &egui::Context, theme: &Theme) -> egui::Visuals {
     visuals.selection.stroke = Stroke::new(1.0, theme.accent_color);
     visuals.window_shadow = theme.window_shadow;
 
+    // Set all widget roundings to zero
+    visuals.widgets.noninteractive.rounding = Rounding::same(0.0);
+    visuals.widgets.inactive.rounding = Rounding::same(0.0);
+    visuals.widgets.hovered.rounding = Rounding::same(0.0);
+    visuals.widgets.active.rounding = Rounding::same(0.0);
+    visuals.widgets.open.rounding = Rounding::same(0.0);
+
     visuals.widgets.noninteractive.bg_fill = theme.background_color;
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, theme.text_color);
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(theme.widget_border_width, theme.widget_border_color);
-    visuals.widgets.noninteractive.rounding = theme.widget_rounding;
 
     visuals.widgets.inactive = visuals.widgets.noninteractive.clone();
     visuals.widgets.inactive.bg_fill = theme.secondary_color;
@@ -150,4 +158,10 @@ pub fn custom_theme(ctx: &egui::Context, theme: &Theme) -> egui::Visuals {
     ctx.set_fonts(fonts);
 
     visuals
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self::purple()
+    }
 }

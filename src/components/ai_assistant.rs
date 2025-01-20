@@ -276,10 +276,10 @@ impl AIAssistant {
                                     }
                                     
                                     for message in &self.chat_history {
-                                        let (bg_color, text_color) = if message.is_user {
-                                            (ui.style().visuals.extreme_bg_color, ui.style().visuals.text_color())
+                                        let bg_color = if message.is_user {
+                                            ui.style().visuals.extreme_bg_color
                                         } else {
-                                            (ui.style().visuals.code_bg_color, egui::Color32::LIGHT_BLUE)
+                                            ui.style().visuals.code_bg_color
                                         };
     
                                         egui::Frame::none()
@@ -349,7 +349,7 @@ impl AIAssistant {
     
                                 self.runtime.spawn(async move {
                                     let request = ChatRequest {
-                                        model: "deepseek-ai/DeepSeek-V3".to_string(),
+                                        model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
                                         messages,
                                     };
                                 
