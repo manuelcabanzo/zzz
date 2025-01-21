@@ -3,30 +3,36 @@ use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct EmulatorPanel {
     scrcpy_running: bool,
-    device_connected: bool,
+    device_connected: Arc<AtomicBool>,  // Wrap in Arc for sharing
     scrcpy_process: Option<std::process::Child>,
     project_path: Option<PathBuf>,
     last_build_status: Option<String>,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,  // Wrap in Arc for sharing
     app_package_name: String,
     app_activity_name: String,
+    is_initializing: Arc<AtomicBool>,
 }
 
 impl EmulatorPanel {
     pub fn new() -> Self {
-        EmulatorPanel {
+        let panel = EmulatorPanel {
             scrcpy_running: false,
-            device_connected: false,
+            device_connected: Arc::new(AtomicBool::new(false)),
             scrcpy_process: None,
             project_path: None,
             last_build_status: None,
-            runtime: Runtime::new().expect("Failed to create Tokio runtime"),
+            runtime: Arc::new(Runtime::new().expect("Failed to create Tokio runtime")),
             app_package_name: String::new(),
             app_activity_name: String::new(),
-        }
+            is_initializing: Arc::new(AtomicBool::new(true)),
+        };
+        
+        panel.initialize();
+        panel
     }
 
     // Update project path from FileModal
@@ -170,20 +176,37 @@ impl EmulatorPanel {
         None
     }
 
-    fn check_device_connection(&mut self) {
-        let output = match Command::new("adb")
-            .args(["devices"])
-            .output() {
-                Ok(output) => output,
-                Err(e) => {
-                    self.device_connected = false;
-                    self.last_build_status = Some(format!("ADB error: {}", e));
-                    return;
+    fn initialize(&self) {
+        let runtime = self.runtime.clone();
+        let device_connected = self.device_connected.clone();
+        let is_initializing = self.is_initializing.clone();
+        
+        std::thread::spawn(move || {
+            runtime.block_on(async {
+                if let Ok(output) = Command::new("adb")
+                    .args(["devices"])
+                    .output() {
+                    let devices = String::from_utf8_lossy(&output.stdout);
+                    device_connected.store(devices.lines().count() > 1, Ordering::SeqCst);
                 }
-            };
+                // Set initialization complete
+                is_initializing.store(false, Ordering::SeqCst);
+            });
+        });
+    }
 
-        let devices = String::from_utf8_lossy(&output.stdout);
-        self.device_connected = devices.lines().count() > 1;
+    fn check_device_connection(&self) {
+        let runtime = self.runtime.clone();
+        let device_connected = self.device_connected.clone();
+        
+        runtime.spawn(async move {
+            if let Ok(output) = Command::new("adb")
+                .args(["devices"])
+                .output() {
+                let devices = String::from_utf8_lossy(&output.stdout);
+                device_connected.store(devices.lines().count() > 1, Ordering::SeqCst);
+            }
+        });
     }
 
     fn build_app(project_path: &Option<PathBuf>) -> Result<String, String> {
@@ -308,7 +331,7 @@ impl EmulatorPanel {
     fn run_app_with_mirror(&mut self) {
         self.check_device_connection();
     
-        if !self.device_connected {
+        if !self.device_connected.load(Ordering::SeqCst) {
             self.last_build_status = Some("No device connected".to_string());
             return;
         }
@@ -368,6 +391,14 @@ impl EmulatorPanel {
         
         ui.add_space(8.0);
         
+        if self.is_initializing.load(Ordering::SeqCst) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Initializing emulator panel...");
+            });
+            return;
+        }
+        
         // Project path status
         if self.project_path.is_none() {
             ui.label(RichText::new("No Android project selected").color(egui::Color32::YELLOW));
@@ -381,9 +412,9 @@ impl EmulatorPanel {
         
         // Device connection status
         ui.horizontal(|ui| {
-            self.check_device_connection();
-
-            let status_text = if self.device_connected {
+            let is_connected = self.device_connected.load(Ordering::SeqCst);
+            
+            let status_text = if is_connected {
                 RichText::new("Device Connected").color(egui::Color32::GREEN)
             } else {
                 RichText::new("No Device Connected").color(egui::Color32::RED)
@@ -394,13 +425,14 @@ impl EmulatorPanel {
                 self.check_device_connection();
             }
         });
-
+    
         ui.add_space(8.0);
-
+    
         // Run controls
         if !self.scrcpy_running {
+            let is_connected = self.device_connected.load(Ordering::SeqCst);
             if ui.add_enabled(
-                self.device_connected && self.project_path.is_some(),
+                is_connected && self.project_path.is_some(),
                 Button::new("▶ Run App")
             ).clicked() {
                 self.run_app_with_mirror();
@@ -410,9 +442,9 @@ impl EmulatorPanel {
                 self.stop_scrcpy();
             }
         }
-
+    
         ui.add_space(16.0);
-
+    
         // Build status with more details
         if let Some(status) = &self.last_build_status {
             ui.label(RichText::new(status).color(
@@ -423,7 +455,7 @@ impl EmulatorPanel {
                 }
             ));
         }
-
+    
         // Add configuration fields for package and activity names
         ui.add_space(16.0);
         ui.group(|ui| {

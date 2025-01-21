@@ -36,12 +36,15 @@ impl IDE {
         // Load state first
         let state = AppState::load();
         
+        // Create emulator panel first and let it initialize
+        let emulator_panel = EmulatorPanel::new();
+        
         // Create IDE instance with state-derived values
         let mut ide = Self {
             file_modal: FileModal::new(),
             code_editor: CodeEditor::new(),
             console_panel: ConsolePanel::new(),
-            emulator_panel: EmulatorPanel::new(),
+            emulator_panel,  // Use the pre-initialized panel
             settings_modal: SettingsModal::new(),
             show_console_panel: state.console_panel_visible,
             show_emulator_panel: state.emulator_panel_visible,
@@ -193,9 +196,10 @@ impl IDE {
         });
 
         egui::SidePanel::right("emulator_panel")
-            .resizable(true)
-            .default_width(250.0)
-            .show_animated(ctx, self.show_emulator_panel, |ui| {
+            .default_width(350.0)
+            .resizable(false)
+            .max_width(350.0)
+            .min_width(350.0)            .show_animated(ctx, self.show_emulator_panel, |ui| {
                 self.emulator_panel.show(ui);
             });
 
@@ -211,10 +215,10 @@ impl IDE {
 
         if self.show_ai_panel {
             egui::SidePanel::right("ai_panel")
-                .resizable(true)
-                .max_width(400.0)  // Add maximum width
-                .min_width(300.0)  // Add minimum width
                 .default_width(350.0)
+                .resizable(false)
+                .max_width(350.0)
+                .min_width(350.0)
                 .show_animated(ctx, self.show_ai_panel, |ui| {
                     self.ai_assistant.show(ui, &mut self.code_editor);
                 });
