@@ -77,10 +77,10 @@ impl IDE {
                 self.show_emulator_panel = !self.show_emulator_panel;
             }
             if i.key_pressed(egui::Key::Num3) && i.modifiers.ctrl {
-                self.show_console_panel = !self.show_console_panel;
+                self.show_ai_panel = !self.show_ai_panel;
             }
             if i.key_pressed(egui::Key::Num4) && i.modifiers.ctrl {
-                self.show_ai_panel = !self.show_ai_panel;
+                self.show_console_panel = !self.show_console_panel;
             }
             if i.key_pressed(egui::Key::M) && i.modifiers.ctrl {
                 self.settings_modal.show = !self.settings_modal.show;

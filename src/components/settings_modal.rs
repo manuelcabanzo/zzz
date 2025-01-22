@@ -4,8 +4,8 @@ use crate::utils::themes::{Theme, custom_theme};
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
     Personalization,
-    General,
-    Editor,
+    // General,
+    // Editor,
     AI, // Add new tab for AI settings
 }
 
@@ -64,8 +64,8 @@ impl SettingsModal {
                 egui::TopBottomPanel::top("settings_tabs").show_inside(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.settings_tab, SettingsTab::Personalization, "Personalization");
-                        ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "General");
-                        ui.selectable_value(&mut self.settings_tab, SettingsTab::Editor, "Editor");
+                        // ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "General");
+                        // ui.selectable_value(&mut self.settings_tab, SettingsTab::Editor, "Editor");
                         ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant"); // Add new tab
                     });
                 });
@@ -73,8 +73,8 @@ impl SettingsModal {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     match self.settings_tab {
                         SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
-                        SettingsTab::General => self.show_general_settings(ui),
-                        SettingsTab::Editor => self.show_editor_settings(ui),
+                        // SettingsTab::General => self.show_general_settings(ui),
+                        // SettingsTab::Editor => self.show_editor_settings(ui),
                         SettingsTab::AI => self.show_ai_settings(ui), // Add new tab handler
                     }
                 });    
@@ -114,17 +114,17 @@ impl SettingsModal {
         }
     }
 
-    fn show_general_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("General Settings");
-        ui.add_space(10.0);
-        ui.label("General settings will be added here in the future.");
-    }
+    // fn show_general_settings(&mut self, ui: &mut egui::Ui) {
+    //     ui.heading("General Settings");
+    //     ui.add_space(10.0);
+    //     ui.label("General settings will be added here in the future.");
+    // }
 
-    fn show_editor_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Editor Settings");
-        ui.add_space(10.0);
-        ui.label("Editor settings will be added here in the future.");
-    }
+    // fn show_editor_settings(&mut self, ui: &mut egui::Ui) {
+    //     ui.heading("Editor Settings");
+    //     ui.add_space(10.0);
+    //     ui.label("Editor settings will be added here in the future.");
+    // }
 
     pub fn apply_theme(&self, ctx: &egui::Context) {
         let visuals = custom_theme(ctx, &self.current_theme);
