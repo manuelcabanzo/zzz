@@ -314,7 +314,7 @@ impl AIAssistant {
                     // Input area
                     ui.horizontal(|ui| {
                         let text_edit = ui.add_sized(
-                            [ui.available_width() - 80.0, 80.0],
+                            [ui.available_width() - 160.0, 80.0],
                             egui::TextEdit::multiline(&mut self.input_text)
                                 .hint_text("Ask about your code or request changes...")
                                 .desired_rows(3)
@@ -393,7 +393,7 @@ impl AIAssistant {
                         {
                             self.add_debug_message(response.clone());
                         }
-                        self.add_message(response, false);
+                        self.add_message(response.clone(), false);
                         self.is_loading = false;
                     }
                 });

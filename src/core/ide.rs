@@ -88,9 +88,13 @@ impl IDE {
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
                 self.file_modal.open_folder(&mut |msg| self.console_panel.log(msg));
             }
+            if i.key_pressed(egui::Key::S) && i.modifiers.ctrl {
+                self.file_modal.save_current_file(&mut self.code_editor, &mut |msg| self.console_panel.log(msg));
+            }
         });
     }
 
+    
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
         let button_size = egui::vec2(title_bar_height * 0.4, title_bar_height * 0.4); // Reduced button size
@@ -225,7 +229,7 @@ impl IDE {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.handle_keyboard_shortcuts(ctx, ui);
+            self.handle_keyboard_shortcuts(ctx, ui);  // Keep existing keyboard shortcuts
             
             // Calculate available height by getting the panel's size
             let available_space = ui.available_size();

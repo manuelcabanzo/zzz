@@ -84,6 +84,9 @@ impl FileModal {
                             if ui.button("Save").clicked() {
                                 self.save_current_file(code_editor, log);
                             }
+                            if ui.button("Collapse All").clicked() {
+                                self.collapse_all_folders();
+                            }
                         }
                     });
                     
@@ -408,7 +411,11 @@ impl FileModal {
         }
     }
 
-    fn save_current_file(&self, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
+    fn collapse_all_folders(&mut self) {
+        self.expanded_folders.clear();
+    }
+
+    pub fn save_current_file(&self, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
         if let Some(buffer) = code_editor.get_active_buffer() {
             if let Some(file_path) = &buffer.file_path {
                 if let Some(fs) = &self.file_system {
