@@ -61,6 +61,7 @@ pub struct AIAssistant {
     debug_messages: VecDeque<String>,
     panel_height: f32,
     runtime: Arc<Runtime>,
+    last_ai_response: Option<String>,
 }
 
 impl AIAssistant {
@@ -82,7 +83,7 @@ impl AIAssistant {
             context_window: 5,
             debug_messages: VecDeque::with_capacity(10),
             panel_height: 600.0,
-            runtime,
+            runtime,last_ai_response: None,
         }
     }
 
@@ -318,6 +319,32 @@ impl AIAssistant {
                                 .hint_text("Ask about your code or request changes...")
                                 .desired_rows(3)
                         );
+
+                        let last_response = self.last_ai_response.clone().unwrap_or_default();
+                        let has_code_block = extract_code_block(&last_response).trim().len() > 0;
+                        
+                        let apply_button = ui.add_enabled(
+                            has_code_block, 
+                            egui::Button::new(
+                                egui::RichText::new("Apply Code")
+                                    .size(16.0)
+                            )
+                        );
+
+                        if apply_button.clicked() {
+                            if let Some(active_buffer) = code_editor.get_active_buffer_mut() {
+                                let code_block = extract_code_block(&last_response);
+                                
+                                if !code_block.is_empty() {
+                                    // Replace entire buffer content with the code block
+                                    active_buffer.content = code_block.trim().to_string();
+                                    active_buffer.is_modified = true;
+                                    
+                                    // Optional: Clear the last response after applying
+                                    self.last_ai_response = None;
+                                }
+                            }
+                        }
     
                         ui.vertical(|ui| {
                             ui.add_space(20.0);
@@ -384,7 +411,6 @@ impl AIAssistant {
                         });
                     });
     
-                    // Handle responses
                     while let Ok(response) = self.rx.try_recv() {
                         if response.starts_with("Error") || 
                            response.starts_with("Network error") || 
@@ -392,10 +418,44 @@ impl AIAssistant {
                         {
                             self.add_debug_message(response.clone());
                         }
+                        
+                        // Store the last AI response for potential code application
+                        self.last_ai_response = Some(response.clone());
+                        
                         self.add_message(response.clone(), false);
                         self.is_loading = false;
                     }
                 });
             });
     }
+}
+
+fn extract_code_block(text: &str) -> String {
+    // First, try to extract markdown code block
+    let markdown_block_pattern: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("```"))
+        .skip(1)  // Skip the opening ```
+        .take_while(|line| !line.starts_with("```"))
+        .collect();
+
+    if !markdown_block_pattern.is_empty() {
+        return markdown_block_pattern.join("\n");
+    }
+
+    // If no markdown block, try to extract the entire code portion
+    let code_lines: Vec<&str> = text
+        .lines()
+        .filter(|line| 
+            // Basic heuristics to identify code-like lines
+            line.contains("class ") || 
+            line.contains("fun ") || 
+            line.contains("import ") || 
+            line.contains("{") || 
+            line.contains("}") || 
+            line.trim().starts_with(".")
+        )
+        .collect();
+
+    code_lines.join("\n")
 }
