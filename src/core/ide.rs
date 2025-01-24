@@ -11,6 +11,16 @@ use crate::core::app_state::AppState;
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 use std::sync::Arc;
+use std::rc::Rc;
+use crate::core::file_system::FileSystem;
+use std::path::Path;
+
+#[derive(Clone)]
+pub struct SearchResult {
+    pub line_number: usize,
+    pub line_content: String,
+    pub file_path: Option<String>,
+}
 
 pub struct IDE {
     pub file_modal: FileModal,
@@ -29,6 +39,11 @@ pub struct IDE {
     pub show_file_search_modal: bool,
     pub file_search_query: String,
     pub file_search_results: Vec<String>,
+    pub show_current_file_search_modal: bool,
+    pub show_project_search_modal: bool,
+    pub search_query: String,
+    pub search_results: Vec<SearchResult>,
+    pub search_highlight_text: Option<String>,
 }
 
 impl IDE {
@@ -60,6 +75,11 @@ impl IDE {
             show_file_search_modal: false,
             file_search_query: String::new(),
             file_search_results: Vec::new(),
+            show_current_file_search_modal: false,
+            show_project_search_modal: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_highlight_text: None,
         };
         
         // Enter runtime after creation
@@ -100,7 +120,135 @@ impl IDE {
             if i.key_pressed(egui::Key::P) && i.modifiers.ctrl {
                 self.show_file_search_modal = true;
             }
+            if i.key_pressed(egui::Key::F) && i.modifiers.ctrl && !i.modifiers.shift {
+                // Current file search
+                self.show_current_file_search_modal = true;
+                self.search_query = String::new();
+                self.search_results = Vec::new();
+            }
+            if i.key_pressed(egui::Key::F) && i.modifiers.ctrl && i.modifiers.shift {
+                // Project-wide search
+                self.show_project_search_modal = true;
+                self.search_query = String::new();
+                self.search_results = Vec::new();
+            }
         });
+    }
+
+    fn perform_current_file_search(&mut self) {
+        if let Some(buffer) = self.code_editor.get_active_buffer() {
+            let content = &buffer.content;
+            self.search_results = content
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.contains(&self.search_query))
+                .map(|(line_num, line)| SearchResult {
+                    line_number: line_num + 1,
+                    line_content: line.to_string(),
+                    file_path: buffer.file_path.clone(), // Add this line
+                })
+                .collect();
+        }
+    }
+    
+    // Fix the project search method
+    fn perform_project_search(&mut self) {
+        let mut results = Vec::new(); // Create a local results vector
+        if let Some(fs) = &self.file_modal.file_system {
+            if let Some(project_path) = &self.file_modal.project_path {
+                self.search_in_directory(fs, project_path, &self.search_query, &mut results);
+            }
+        }
+        self.search_results = results; // Assign results after search
+    }
+
+    fn search_in_directory(&self, fs: &Rc<FileSystem>, dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
+        if let Ok(entries) = fs.list_directory(dir) {
+            for entry in entries {
+                let path = dir.join(&entry.name);
+                if !entry.is_dir {
+                    if let Ok(content) = fs.open_file(&path) {
+                        let file_results = content
+                            .lines()
+                            .enumerate()
+                            .filter(|(_, line)| line.contains(query))
+                            .map(|(line_num, line)| SearchResult {
+                                line_number: line_num + 1,
+                                line_content: line.to_string(),
+                                file_path: Some(path.to_str().unwrap().to_string()),
+                            })
+                            .collect::<Vec<_>>();
+                        results.extend(file_results);
+                    }
+                } else {
+                    self.search_in_directory(fs, &path, query, results);
+                }
+            }
+        }
+    }
+
+    fn show_search_modal(&mut self, ctx: &egui::Context) {
+        let is_project_search = self.show_project_search_modal;
+        let modal_title = if is_project_search { "Project Search" } else { "Current File Search" };
+
+        if self.show_current_file_search_modal || self.show_project_search_modal {
+            egui::Window::new(modal_title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add(TextEdit::singleline(&mut self.search_query).hint_text("Search..."));
+                        
+                        if !self.search_query.is_empty() {
+                            if is_project_search {
+                                self.perform_project_search();
+                            } else {
+                                self.perform_current_file_search();
+                            }
+                        }
+
+                        ScrollArea::vertical().show(ui, |ui| {
+                            for result in self.search_results.iter() {
+                                let display_text = if is_project_search {
+                                    format!("{}:{} - {}", 
+                                        result.file_path.as_ref().unwrap_or(&"Unknown".to_string()), 
+                                        result.line_number, 
+                                        result.line_content.trim()
+                                    )
+                                } else {
+                                    format!("Line {}: {}", result.line_number, result.line_content.trim())
+                                };
+
+                                let response = ui.button(display_text);
+                                if response.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                    // Handle file opening and cursor positioning
+                                    if is_project_search {
+                                        if let Some(file_path) = &result.file_path {
+                                            self.file_modal.open_file(file_path, &mut self.code_editor);
+                                        }
+                                    }
+                                
+                                    // Set cursor position in the active buffer
+                                    if let Some(buffer) = self.code_editor.get_active_buffer_mut() {
+                                        buffer.set_cursor_position(
+                                            result.line_number, 
+                                            result.line_content.find(&self.search_query).unwrap_or(0)
+                                        );
+                                    }
+                                
+                                    // Perform search and highlighting in the code editor
+                                    self.code_editor.search(&self.search_query);
+                                
+                                    // Close the search modal
+                                    self.show_current_file_search_modal = false;
+                                    self.show_project_search_modal = false;
+                                }
+                            }
+                        });
+                    });
+                });
+        }
     }
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
@@ -248,6 +396,7 @@ impl IDE {
             }
         }
 
+        self.show_search_modal(ctx);
         self.console_panel.update(ctx);
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());

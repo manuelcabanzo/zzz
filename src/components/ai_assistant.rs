@@ -319,35 +319,13 @@ impl AIAssistant {
                                 .hint_text("Ask about your code or request changes...")
                                 .desired_rows(3)
                         );
+                    
+                        ui.horizontal(|ui| {
+                    
+                            let last_response = self.last_ai_response.clone().unwrap_or_default();
+                            let has_code_block = extract_code_block(&last_response).trim().len() > 0;
 
-                        let last_response = self.last_ai_response.clone().unwrap_or_default();
-                        let has_code_block = extract_code_block(&last_response).trim().len() > 0;
-                        
-                        let apply_button = ui.add_enabled(
-                            has_code_block, 
-                            egui::Button::new(
-                                egui::RichText::new("Apply Code")
-                                    .size(16.0)
-                            )
-                        );
-
-                        if apply_button.clicked() {
-                            if let Some(active_buffer) = code_editor.get_active_buffer_mut() {
-                                let code_block = extract_code_block(&last_response);
-                                
-                                if !code_block.is_empty() {
-                                    // Replace entire buffer content with the code block
-                                    active_buffer.content = code_block.trim().to_string();
-                                    active_buffer.is_modified = true;
-                                    
-                                    // Optional: Clear the last response after applying
-                                    self.last_ai_response = None;
-                                }
-                            }
-                        }
-    
-                        ui.vertical(|ui| {
-                            ui.add_space(20.0);
+                            // "Send" button
                             let send_button = ui.add_sized(
                                 [70.0, 40.0],
                                 egui::Button::new(
@@ -355,7 +333,33 @@ impl AIAssistant {
                                         .size(16.0)
                                 )
                             );
-    
+
+                            // Only show the "Apply Code" button if there's a code block
+                            if has_code_block {
+                                ui.vertical(|ui| {
+
+                                    // "Apply Code" button
+                                    let apply_button = ui.add_sized(
+                                        [70.0, 40.0],
+                                        egui::Button::new(
+                                            egui::RichText::new("Apply Code")
+                                                .size(16.0)
+                                        )
+                                    );
+
+                                    if apply_button.clicked() {
+                                        if let Some(active_buffer) = code_editor.get_active_buffer_mut() {
+                                            let code_block = extract_code_block(&last_response);
+                                            if !code_block.is_empty() {
+                                                active_buffer.content = code_block.trim().to_string();
+                                                active_buffer.is_modified = true;
+                                                self.last_ai_response = None;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+
                             if (text_edit.lost_focus() && 
                                 ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) || 
                                 send_button.clicked()) && 

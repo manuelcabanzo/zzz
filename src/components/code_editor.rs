@@ -52,6 +52,13 @@ impl Buffer {
             cursor_position: CursorPosition { line: 0, column: 0 },
         }
     }
+
+    pub fn set_cursor_position(&mut self, line: usize, column: usize) {
+        self.cursor_position = CursorPosition { 
+            line: line.saturating_sub(1), // Convert to 0-based index
+            column 
+        };
+    }
 }
 
 pub struct CodeEditor {
@@ -59,6 +66,7 @@ pub struct CodeEditor {
     pub buffers: Vec<Buffer>,
     pub active_buffer_index: Option<usize>,
     pub current_file: Option<String>,
+    pub search_highlight_text: Option<String>, // Add this field
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
 }
@@ -70,6 +78,7 @@ impl CodeEditor {
             buffers: Vec::new(),
             active_buffer_index: None,
             current_file: None,
+            search_highlight_text: None, // Initialize
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
         }
@@ -167,6 +176,7 @@ impl CodeEditor {
                     // Calculate remaining height for the editor
                     let header_height = ui.min_rect().height();
                     let editor_height = available_height - header_height;
+                    let search_highlight = self.search_highlight_text.clone();
 
                     // Code editing area with syntax highlighting
                     egui::ScrollArea::vertical()
@@ -180,7 +190,8 @@ impl CodeEditor {
                                     string,
                                     &self.syntax_set,
                                     &self.theme_set,
-                                    &buffer.syntax
+                                    &buffer.syntax,
+                                    search_highlight.as_deref() // Pass search highlight
                                 );
                                 layout_job.wrap.max_width = wrap_width;
                                 ui.fonts(|f| f.layout_job(layout_job))
@@ -208,6 +219,32 @@ impl CodeEditor {
         
     }
 
+    pub fn search(&mut self, search_term: &str) {
+        // Set the search highlight text
+        self.search_highlight_text = Some(search_term.to_string());
+
+        // If an active buffer exists, find and set cursor to first occurrence
+        if let Some(buffer) = self.get_active_buffer_mut() {
+            let mut highlighted_content = buffer.content.clone();
+            let mut end = 0;
+            while let Some(next_position) = highlighted_content[end..].find(search_term) {
+                end = end + next_position;
+                highlighted_content.insert_str(end, "<mark>");
+                end += "<mark>".len();
+                highlighted_content.insert_str(end + search_term.len(), "</mark>");
+                end += "</mark>".len();
+                end += search_term.len();
+            }
+            buffer.content = highlighted_content;
+
+            // Set cursor position to first occurrence
+            if let Some(position) = buffer.content.find(search_term) {
+                let (line, column) = calculate_line_column(&buffer.content, position);
+                buffer.set_cursor_position(line, column);
+            }
+        }
+    }
+
     pub fn get_active_buffer(&self) -> Option<&Buffer> {
         self.active_buffer_index.and_then(|i| self.buffers.get(i))
     }
@@ -229,6 +266,7 @@ fn highlight_syntax(
     syntax_set: &SyntaxSet,
     theme_set: &ThemeSet,
     current_syntax: &str,
+    search_highlight: Option<&str>,
 ) -> egui::text::LayoutJob {
     let syntax = syntax_set.find_syntax_by_name(current_syntax)
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
@@ -238,12 +276,45 @@ fn highlight_syntax(
 
     for line in LinesWithEndings::from(code) {
         let highlighted = highlighter.highlight_line(line, syntax_set).unwrap();
+        
+        if let Some(highlight_text) = search_highlight {
+            if line.contains(highlight_text) {
+                let highlight_format = egui::TextFormat {
+                    background: egui::Color32::from_rgba_unmultiplied(255, 255, 0, 100),
+                    ..egui::TextFormat::default()
+                };
+                
+                let parts: Vec<&str> = line.split(highlight_text).collect();
+                for (i, part) in parts.iter().enumerate() {
+                    // Add the non-highlight part
+                    for (style, text) in highlighter.highlight_line(part, syntax_set).unwrap() {
+                        job.append(text, 0.0, style_to_text_format(style));
+                    }
+                    
+                    // Add the highlight part if not the last segment
+                    if i < parts.len() - 1 {
+                        job.append(highlight_text, 0.0, highlight_format.clone()); // Add .clone()
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Normal syntax highlighting if no search highlight
         for (style, text) in highlighted {
             job.append(text, 0.0, style_to_text_format(style));
         }
     }
 
     job
+}
+
+fn calculate_line_column(text: &str, position: usize) -> (usize, usize) {
+    let lines = text[..position].split('\n');
+    let line = lines.count();
+    let last_line = text[..position].lines().last().unwrap_or("");
+    let column = last_line.len() + 1;
+    (line, column)
 }
 
 fn style_to_text_format(style: Style) -> egui::TextFormat {
