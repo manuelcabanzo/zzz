@@ -435,4 +435,40 @@ impl FileModal {
             log("No file is currently open.");
         }
     }
+
+    pub fn search_files(&self, query: &str) -> Vec<String> {
+        let mut results = Vec::new();
+        if let Some(fs) = &self.file_system {
+            if let Some(project_path) = &self.project_path {
+                self.search_directory(fs, project_path, query, &mut results);
+            }
+        }
+        results
+    }
+
+    fn search_directory(&self, fs: &Rc<FileSystem>, dir: &Path, query: &str, results: &mut Vec<String>) {
+        if let Ok(entries) = fs.list_directory(dir) {
+            for entry in entries {
+                let path = dir.join(&entry.name);
+                if entry.name.contains(query) {
+                    results.push(path.to_str().unwrap().to_string());
+                }
+                if entry.is_dir {
+                    self.search_directory(fs, &path, query, results);
+                }
+            }
+        }
+    }
+
+    pub fn open_file(&mut self, file_path: &str, code_editor: &mut CodeEditor) {
+        if let Some(fs) = &self.file_system {
+            let path = Path::new(file_path);
+            match fs.open_file(path) {
+                Ok(content) => {
+                    code_editor.open_file(content, file_path.to_string());
+                }
+                Err(e) => eprintln!("Error opening file {}: {}", file_path, e),
+            }
+        }
+    }
 }

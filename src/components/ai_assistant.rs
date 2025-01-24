@@ -68,7 +68,6 @@ impl AIAssistant {
     const RETRY_DELAY_MS: u64 = 1000;
 
     pub fn new(api_key: String, runtime: Arc<Runtime>) -> Self {
-        println!("Initializing AI Assistant with API key length: {}", api_key.len());
         let (tx, rx) = mpsc::channel(32);
         
         Self {

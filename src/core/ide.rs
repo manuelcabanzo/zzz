@@ -1,4 +1,4 @@
-use eframe::egui::{self, Rect, Stroke, Color32, Painter, Vec2};
+use eframe::egui::{self, Rect, Stroke, Color32, Painter, Vec2, TextEdit, ScrollArea}; // Add TextEdit and ScrollArea
 use crate::components::{
     file_modal::FileModal,
     code_editor::CodeEditor,
@@ -26,6 +26,9 @@ pub struct IDE {
     pub tokio_runtime: Arc<Runtime>,
     runtime_handle: Option<tokio::task::JoinHandle<()>>,
     pub ai_assistant: AIAssistant,
+    pub show_file_search_modal: bool,
+    pub file_search_query: String,
+    pub file_search_results: Vec<String>,
 }
 
 impl IDE {
@@ -54,6 +57,9 @@ impl IDE {
             tokio_runtime: tokio_runtime.clone(),
             runtime_handle: None,
             ai_assistant: AIAssistant::new(state.ai_api_key.clone(), tokio_runtime.clone()),
+            show_file_search_modal: false,
+            file_search_query: String::new(),
+            file_search_results: Vec::new(),
         };
         
         // Enter runtime after creation
@@ -91,10 +97,12 @@ impl IDE {
             if i.key_pressed(egui::Key::S) && i.modifiers.ctrl {
                 self.file_modal.save_current_file(&mut self.code_editor, &mut |msg| self.console_panel.log(msg));
             }
+            if i.key_pressed(egui::Key::P) && i.modifiers.ctrl {
+                self.show_file_search_modal = true;
+            }
         });
     }
 
-    
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
         let button_size = egui::vec2(title_bar_height * 0.4, title_bar_height * 0.4); // Reduced button size
@@ -193,6 +201,33 @@ impl IDE {
         )
     }
 
+    fn show_file_search_modal(&mut self, ctx: &egui::Context) {
+        if self.show_file_search_modal {
+            egui::Window::new("File Search")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add(TextEdit::singleline(&mut self.file_search_query).hint_text("Type to search..."));
+                        
+                        if !self.file_search_query.is_empty() {
+                            self.file_search_results = self.file_modal.search_files(&self.file_search_query);
+                        }
+
+                        ScrollArea::vertical().show(ui, |ui| {
+                            for result in &self.file_search_results {
+                                if ui.button(result).clicked() {
+                                    self.file_modal.open_file(result, &mut self.code_editor);
+                                    self.show_file_search_modal = false;
+                                }
+                            }
+                        });
+                    });
+                });
+        }
+    }
+
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // This is where `ui` is automatically available in the closure
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
@@ -266,6 +301,7 @@ impl IDE {
         }
     
         self.settings_modal.show(ctx);
+        self.show_file_search_modal(ctx);
     }
     
 }
