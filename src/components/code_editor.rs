@@ -5,8 +5,8 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
-
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CursorPosition {
@@ -66,7 +66,8 @@ pub struct CodeEditor {
     pub buffers: Vec<Buffer>,
     pub active_buffer_index: Option<usize>,
     pub current_file: Option<String>,
-    pub search_highlight_text: Option<String>, // Add this field
+    pub search_highlight_text: Option<String>,
+    pub search_highlight_expires_at: Option<Instant>, // New field
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
 }
@@ -78,7 +79,8 @@ impl CodeEditor {
             buffers: Vec::new(),
             active_buffer_index: None,
             current_file: None,
-            search_highlight_text: None, // Initialize
+            search_highlight_text: None,
+            search_highlight_expires_at: None, // Initialize
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
         }
@@ -127,6 +129,8 @@ impl CodeEditor {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, available_height: f32) {
+
+        self.clear_expired_highlights();
 
         let mut buffer_to_close = None;
 
@@ -220,8 +224,9 @@ impl CodeEditor {
     }
 
     pub fn search(&mut self, search_term: &str) {
-        // Set the search highlight text
+        // Set the search highlight text and expiration time
         self.search_highlight_text = Some(search_term.to_string());
+        self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs(2));
 
         // If an active buffer exists, find and set cursor to first occurrence
         if let Some(buffer) = self.get_active_buffer_mut() {
@@ -241,6 +246,23 @@ impl CodeEditor {
             if let Some(position) = buffer.content.find(search_term) {
                 let (line, column) = calculate_line_column(&buffer.content, position);
                 buffer.set_cursor_position(line, column);
+            }
+        }
+    }
+
+    pub fn clear_expired_highlights(&mut self) {
+        // Check if highlights have expired
+        if let Some(expires_at) = self.search_highlight_expires_at {
+            if Instant::now() >= expires_at {
+                // Clear the highlight
+                if let Some(buffer) = self.get_active_buffer_mut() {
+                    // Remove marking tags
+                    buffer.content = buffer.content.replace("<mark>", "").replace("</mark>", "");
+                }
+                
+                // Reset highlight tracking
+                self.search_highlight_text = None;
+                self.search_highlight_expires_at = None;
             }
         }
     }
@@ -293,7 +315,7 @@ fn highlight_syntax(
                     
                     // Add the highlight part if not the last segment
                     if i < parts.len() - 1 {
-                        job.append(highlight_text, 0.0, highlight_format.clone()); // Add .clone()
+                        job.append(highlight_text, 0.0, highlight_format.clone());
                     }
                 }
                 continue;
