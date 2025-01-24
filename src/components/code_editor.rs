@@ -226,22 +226,10 @@ impl CodeEditor {
     pub fn search(&mut self, search_term: &str) {
         // Set the search highlight text and expiration time
         self.search_highlight_text = Some(search_term.to_string());
-        self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs(2));
+        self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs(1));
 
         // If an active buffer exists, find and set cursor to first occurrence
         if let Some(buffer) = self.get_active_buffer_mut() {
-            let mut highlighted_content = buffer.content.clone();
-            let mut end = 0;
-            while let Some(next_position) = highlighted_content[end..].find(search_term) {
-                end = end + next_position;
-                highlighted_content.insert_str(end, "<mark>");
-                end += "<mark>".len();
-                highlighted_content.insert_str(end + search_term.len(), "</mark>");
-                end += "</mark>".len();
-                end += search_term.len();
-            }
-            buffer.content = highlighted_content;
-
             // Set cursor position to first occurrence
             if let Some(position) = buffer.content.find(search_term) {
                 let (line, column) = calculate_line_column(&buffer.content, position);
@@ -254,12 +242,6 @@ impl CodeEditor {
         // Check if highlights have expired
         if let Some(expires_at) = self.search_highlight_expires_at {
             if Instant::now() >= expires_at {
-                // Clear the highlight
-                if let Some(buffer) = self.get_active_buffer_mut() {
-                    // Remove marking tags
-                    buffer.content = buffer.content.replace("<mark>", "").replace("</mark>", "");
-                }
-                
                 // Reset highlight tracking
                 self.search_highlight_text = None;
                 self.search_highlight_expires_at = None;
