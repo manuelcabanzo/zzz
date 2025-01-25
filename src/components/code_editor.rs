@@ -230,7 +230,7 @@ impl CodeEditor {
     pub fn search(&mut self, search_term: &str, selected_line_number: Option<usize>) {
         // Set the search highlight text and expiration time
         self.search_highlight_text = Some(search_term.to_string());
-        self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs(1));
+        self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs_f64(0.5));
 
         // Store the selected line number for precise highlighting
         self.search_selected_line = selected_line_number;

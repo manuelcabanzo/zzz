@@ -44,6 +44,7 @@ pub struct IDE {
     pub search_query: String,
     pub search_results: Vec<SearchResult>,
     pub search_highlight_text: Option<String>,
+    search_focus_requested: bool, // Add this field
 }
 
 impl IDE {
@@ -80,6 +81,7 @@ impl IDE {
             search_query: String::new(),
             search_results: Vec::new(),
             search_highlight_text: None,
+            search_focus_requested: false, // Initialize the field
         };
         
         // Enter runtime after creation
@@ -127,6 +129,7 @@ impl IDE {
                     self.show_current_file_search_modal = true;
                     self.search_query = String::new();
                     self.search_results = Vec::new();
+                    self.search_focus_requested = true; // Request focus
                 }
             }
             if i.key_pressed(egui::Key::F) && i.modifiers.ctrl && i.modifiers.shift {
@@ -136,6 +139,7 @@ impl IDE {
                     self.show_project_search_modal = true;
                     self.search_query = String::new();
                     self.search_results = Vec::new();
+                    self.search_focus_requested = true; // Request focus
                 }
             }
             if i.key_pressed(egui::Key::Escape) {
@@ -323,8 +327,9 @@ impl IDE {
                         
                         // Automatically request focus when the modal is opened
                         let response = ui.add(text_edit);
-                        if response.gained_focus() {
+                        if self.search_focus_requested {
                             response.request_focus();
+                            self.search_focus_requested = false; // Reset the flag
                         }
                         
                         if !self.search_query.is_empty() {
