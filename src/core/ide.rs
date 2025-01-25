@@ -151,37 +151,147 @@ impl IDE {
         }
     }
     
-    // Fix the project search method
     fn perform_project_search(&mut self) {
-        let mut results = Vec::new(); // Create a local results vector
+        const MAX_RESULTS: usize = 100;
+        let mut results = Vec::new();
+        
+        // Kotlin/Mobile-specific excluded directories
+        let excluded_dirs = vec![
+            // Build and compilation directories
+            "build", 
+            "target", 
+            "out",
+            "bin",
+            
+            // Dependency and cache directories
+            "node_modules",
+            ".gradle",
+            "gradle",
+            "captures",
+            
+            // Version control and IDE-specific
+            ".git", 
+            ".svn", 
+            ".idea", 
+            ".vscode",
+            
+            // Android-specific
+            "app/build",
+            "androidTest",
+            "test",
+            "debug",
+            "release",
+            
+            // Kotlin/Multiplatform specific
+            "shared/build",
+            "commonMain",
+            "androidMain",
+            "iosMain",
+            
+            // Misc system and cache folders
+            "__MACOSX",
+            ".DS_Store",
+            "*.xcodeproj",
+            "*.iml",
+        ];
+        
         if let Some(fs) = &self.file_modal.file_system {
             if let Some(project_path) = &self.file_modal.project_path {
-                self.search_in_directory(fs, project_path, &self.search_query, &mut results);
+                let query = self.search_query.trim();
+                if query.len() >= 2 {
+                    self.search_in_directory_with_exclusions(
+                        fs, 
+                        project_path, 
+                        query, 
+                        &mut results, 
+                        MAX_RESULTS,
+                        &excluded_dirs
+                    );
+                }
             }
         }
-        self.search_results = results; // Assign results after search
+        self.search_results = results;
     }
-
-    fn search_in_directory(&self, fs: &Rc<FileSystem>, dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
+    
+    fn search_in_directory_with_exclusions(
+        &self, 
+        fs: &Rc<FileSystem>, 
+        dir: &Path, 
+        query: &str, 
+        results: &mut Vec<SearchResult>, 
+        max_results: usize,
+        excluded_dirs: &[&str]
+    ) {
+        if results.len() >= max_results {
+            return;
+        }
+    
         if let Ok(entries) = fs.list_directory(dir) {
             for entry in entries {
+                if results.len() >= max_results {
+                    break;
+                }
+    
                 let path = dir.join(&entry.name);
-                if !entry.is_dir {
+                
+                // Skip file types and excluded directories
+                if entry.is_dir {
+                    let dir_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    
+                    // Pattern matching for more flexible exclusion
+                    if excluded_dirs.iter().any(|&excluded| 
+                        dir_name == excluded || 
+                        dir_name.starts_with(excluded) || 
+                        dir_name.contains(excluded)
+                    ) {
+                        continue;
+                    }
+                    
+                    // Recursively search non-excluded directories
+                    self.search_in_directory_with_exclusions(
+                        fs, 
+                        &path, 
+                        query, 
+                        results, 
+                        max_results, 
+                        excluded_dirs
+                    );
+                } else {
+                    // Skip large or binary files
+                    let file_ext = path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .unwrap_or("");
+                    
+                    let skippable_extensions = [
+                        "png", "jpg", "jpeg", "gif", 
+                        "svg", "pdf", "zip", 
+                        "tar", "gz", "class", 
+                        "jar", "so", "dll", 
+                        "dylib", "o", "a"
+                    ];
+                    
+                    if skippable_extensions.contains(&file_ext) {
+                        continue;
+                    }
+                    
+                    // File content search
                     if let Ok(content) = fs.open_file(&path) {
                         let file_results = content
                             .lines()
                             .enumerate()
                             .filter(|(_, line)| line.contains(query))
+                            .take(10) // Limit matches per file
                             .map(|(line_num, line)| SearchResult {
                                 line_number: line_num + 1,
                                 line_content: line.to_string(),
                                 file_path: Some(path.to_str().unwrap().to_string()),
                             })
                             .collect::<Vec<_>>();
+                        
                         results.extend(file_results);
                     }
-                } else {
-                    self.search_in_directory(fs, &path, query, results);
                 }
             }
         }
