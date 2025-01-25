@@ -238,8 +238,10 @@ impl IDE {
                                     }
                                 
                                     // Perform search and highlighting in the code editor
-                                    self.code_editor.search(&self.search_query);
-                                
+                                    self.code_editor.search(
+                                        &self.search_query, 
+                                        Some(result.line_number)
+                                    );                                
                                     // Close the search modal
                                     self.show_current_file_search_modal = false;
                                     self.show_project_search_modal = false;

@@ -70,6 +70,7 @@ pub struct CodeEditor {
     pub search_highlight_expires_at: Option<Instant>, // New field
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
+    pub search_selected_line: Option<usize>,
 }
 
 impl CodeEditor {
@@ -83,6 +84,7 @@ impl CodeEditor {
             search_highlight_expires_at: None, // Initialize
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
+            search_selected_line: None,
         }
     }
 
@@ -181,6 +183,7 @@ impl CodeEditor {
                     let header_height = ui.min_rect().height();
                     let editor_height = available_height - header_height;
                     let search_highlight = self.search_highlight_text.clone();
+                    let selected_line = self.search_selected_line;
 
                     // Code editing area with syntax highlighting
                     egui::ScrollArea::vertical()
@@ -195,7 +198,8 @@ impl CodeEditor {
                                     &self.syntax_set,
                                     &self.theme_set,
                                     &buffer.syntax,
-                                    search_highlight.as_deref() // Pass search highlight
+                                    search_highlight.as_deref(),
+                                    selected_line
                                 );
                                 layout_job.wrap.max_width = wrap_width;
                                 ui.fonts(|f| f.layout_job(layout_job))
@@ -223,10 +227,13 @@ impl CodeEditor {
         
     }
 
-    pub fn search(&mut self, search_term: &str) {
+    pub fn search(&mut self, search_term: &str, selected_line_number: Option<usize>) {
         // Set the search highlight text and expiration time
         self.search_highlight_text = Some(search_term.to_string());
         self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs(1));
+
+        // Store the selected line number for precise highlighting
+        self.search_selected_line = selected_line_number;
 
         // If an active buffer exists, find and set cursor to first occurrence
         if let Some(buffer) = self.get_active_buffer_mut() {
@@ -271,6 +278,7 @@ fn highlight_syntax(
     theme_set: &ThemeSet,
     current_syntax: &str,
     search_highlight: Option<&str>,
+    selected_line: Option<usize>,
 ) -> egui::text::LayoutJob {
     let syntax = syntax_set.find_syntax_by_name(current_syntax)
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
@@ -278,16 +286,12 @@ fn highlight_syntax(
 
     let mut job = egui::text::LayoutJob::default();
 
-    for line in LinesWithEndings::from(code) {
-        let highlighted = highlighter.highlight_line(line, syntax_set).unwrap();
-        
+    for (line_index, line) in LinesWithEndings::from(code).enumerate() {
+        // Check if this line should be highlighted
+        let should_highlight = selected_line.map_or(false, |sel| line_index + 1 == sel);
+
         if let Some(highlight_text) = search_highlight {
-            if line.contains(highlight_text) {
-                let highlight_format = egui::TextFormat {
-                    background: egui::Color32::from_rgba_unmultiplied(255, 255, 0, 100),
-                    ..egui::TextFormat::default()
-                };
-                
+            if should_highlight && line.contains(highlight_text) {
                 let parts: Vec<&str> = line.split(highlight_text).collect();
                 for (i, part) in parts.iter().enumerate() {
                     // Add the non-highlight part
@@ -297,16 +301,24 @@ fn highlight_syntax(
                     
                     // Add the highlight part if not the last segment
                     if i < parts.len() - 1 {
-                        job.append(highlight_text, 0.0, highlight_format.clone());
+                        let highlight_format = egui::TextFormat {
+                            background: egui::Color32::from_rgba_unmultiplied(255, 255, 0, 100),
+                            ..egui::TextFormat::default()
+                        };
+                        job.append(highlight_text, 0.0, highlight_format);
                     }
                 }
-                continue;
+            } else {
+                // Normal syntax highlighting
+                for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
+                    job.append(text, 0.0, style_to_text_format(style));
+                }
             }
-        }
-
-        // Normal syntax highlighting if no search highlight
-        for (style, text) in highlighted {
-            job.append(text, 0.0, style_to_text_format(style));
+        } else {
+            // Normal syntax highlighting if no search highlight
+            for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
+                job.append(text, 0.0, style_to_text_format(style));
+            }
         }
     }
 
