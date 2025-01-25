@@ -121,16 +121,26 @@ impl IDE {
                 self.show_file_search_modal = true;
             }
             if i.key_pressed(egui::Key::F) && i.modifiers.ctrl && !i.modifiers.shift {
-                // Current file search
-                self.show_current_file_search_modal = true;
-                self.search_query = String::new();
-                self.search_results = Vec::new();
+                if self.show_current_file_search_modal {
+                    self.show_current_file_search_modal = false;
+                } else if self.code_editor.get_active_buffer().is_some() {
+                    self.show_current_file_search_modal = true;
+                    self.search_query = String::new();
+                    self.search_results = Vec::new();
+                }
             }
             if i.key_pressed(egui::Key::F) && i.modifiers.ctrl && i.modifiers.shift {
-                // Project-wide search
-                self.show_project_search_modal = true;
-                self.search_query = String::new();
-                self.search_results = Vec::new();
+                if self.show_project_search_modal {
+                    self.show_project_search_modal = false;
+                } else {
+                    self.show_project_search_modal = true;
+                    self.search_query = String::new();
+                    self.search_results = Vec::new();
+                }
+            }
+            if i.key_pressed(egui::Key::Escape) {
+                self.show_current_file_search_modal = false;
+                self.show_project_search_modal = false;
             }
         });
     }
@@ -300,7 +310,7 @@ impl IDE {
     fn show_search_modal(&mut self, ctx: &egui::Context) {
         let is_project_search = self.show_project_search_modal;
         let modal_title = if is_project_search { "Project Search" } else { "Current File Search" };
-
+    
         if self.show_current_file_search_modal || self.show_project_search_modal {
             egui::Window::new(modal_title)
                 .collapsible(false)
@@ -308,7 +318,14 @@ impl IDE {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
-                        ui.add(TextEdit::singleline(&mut self.search_query).hint_text("Search..."));
+                        let text_edit = TextEdit::singleline(&mut self.search_query)
+                            .hint_text("Search...");
+                        
+                        // Automatically request focus when the modal is opened
+                        let response = ui.add(text_edit);
+                        if response.gained_focus() {
+                            response.request_focus();
+                        }
                         
                         if !self.search_query.is_empty() {
                             if is_project_search {
@@ -317,19 +334,20 @@ impl IDE {
                                 self.perform_current_file_search();
                             }
                         }
-
+    
                         ScrollArea::vertical().show(ui, |ui| {
                             for result in self.search_results.iter() {
                                 let display_text = if is_project_search {
-                                    format!("{}:{} - {}", 
-                                        result.file_path.as_ref().unwrap_or(&"Unknown".to_string()), 
-                                        result.line_number, 
+                                    format!(
+                                        "{}:{} - {}",
+                                        result.file_path.as_ref().unwrap_or(&"Unknown".to_string()),
+                                        result.line_number,
                                         result.line_content.trim()
                                     )
                                 } else {
                                     format!("Line {}: {}", result.line_number, result.line_content.trim())
                                 };
-
+    
                                 let response = ui.button(display_text);
                                 if response.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                     // Handle file opening and cursor positioning
@@ -338,20 +356,21 @@ impl IDE {
                                             self.file_modal.open_file(file_path, &mut self.code_editor);
                                         }
                                     }
-                                
+                                    
                                     // Set cursor position in the active buffer
                                     if let Some(buffer) = self.code_editor.get_active_buffer_mut() {
                                         buffer.set_cursor_position(
-                                            result.line_number, 
+                                            result.line_number,
                                             result.line_content.find(&self.search_query).unwrap_or(0)
                                         );
                                     }
-                                
+                                    
                                     // Perform search and highlighting in the code editor
                                     self.code_editor.search(
-                                        &self.search_query, 
+                                        &self.search_query,
                                         Some(result.line_number)
-                                    );                                
+                                    );
+    
                                     // Close the search modal
                                     self.show_current_file_search_modal = false;
                                     self.show_project_search_modal = false;
@@ -361,7 +380,7 @@ impl IDE {
                     });
                 });
         }
-    }
+    }    
 
     fn custom_title_bar(&mut self, ui: &mut egui::Ui) {
         let title_bar_height = 28.0;
@@ -469,12 +488,19 @@ impl IDE {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
-                        ui.add(TextEdit::singleline(&mut self.file_search_query).hint_text("Type to search..."));
+                        let text_edit = TextEdit::singleline(&mut self.file_search_query)
+                            .hint_text("Type to search...");
+                        
+                        // Automatically request focus when the modal is opened
+                        let response = ui.add(text_edit);
+                        if response.gained_focus() {
+                            response.request_focus();
+                        }
                         
                         if !self.file_search_query.is_empty() {
                             self.file_search_results = self.file_modal.search_files(&self.file_search_query);
                         }
-
+    
                         ScrollArea::vertical().show(ui, |ui| {
                             for result in &self.file_search_results {
                                 if ui.button(result).clicked() {
@@ -486,7 +512,7 @@ impl IDE {
                     });
                 });
         }
-    }
+    }    
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // This is where `ui` is automatically available in the closure
