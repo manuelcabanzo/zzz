@@ -165,6 +165,11 @@ impl AppState {
             }
         }
 
-        ide.code_editor.active_buffer_index = self.active_buffer_index;
+        // Ensure no active buffer if there are no buffers
+        if ide.code_editor.buffers.is_empty() {
+            ide.code_editor.active_buffer_index = None;
+        } else {
+            ide.code_editor.active_buffer_index = self.active_buffer_index;
+        }
     }
 }

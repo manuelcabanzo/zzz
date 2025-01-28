@@ -68,11 +68,11 @@ pub struct CodeEditor {
     pub active_buffer_index: Option<usize>,
     pub current_file: Option<String>,
     pub search_highlight_text: Option<String>,
-    pub search_highlight_expires_at: Option<Instant>, // New field
+    pub search_highlight_expires_at: Option<Instant>,
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
     pub search_selected_line: Option<usize>,
-    pub logo_texture: Option<egui::TextureHandle>, // Add this
+    pub logo_texture: Option<egui::TextureHandle>,
 }
 
 impl CodeEditor {
@@ -154,9 +154,7 @@ impl CodeEditor {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, available_height: f32) {
-
         self.clear_expired_highlights();
-
         let mut buffer_to_close = None;
 
         ui.vertical(|ui| {
@@ -183,7 +181,6 @@ impl CodeEditor {
                             self.active_buffer_index = Some(index);
                         }
             
-                        // Add the close button within the same horizontal layout
                         if ui.small_button("×").clicked() {
                             buffer_to_close = Some(index);
                         }
@@ -192,38 +189,56 @@ impl CodeEditor {
             });
 
             if self.buffers.is_empty() {
-                let rect = ui.available_rect_before_wrap();
+                // Create a container that takes up all available space
+                let available_rect = ui.available_rect_before_wrap();
                 
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::none())
-                    .show_inside(ui, |ui| {
-                        let content_height = 300.0;
-                        let available_height = rect.height();
-                        let top_margin = (available_height - content_height) / 2.0;
+                // Create a frame that centers content both horizontally and vertically
+                egui::Frame::none()
+                    .fill(ui.style().visuals.window_fill)
+                    .show(ui, |ui| {
+                        // Calculate the total content height
+                        let logo_height = 128.0;
+                        let heading_height = 30.0;
+                        let shortcuts_height = 7.0 * 20.0; // 7 lines * 20px per line
+                        let spacing = 20.0 * 3.0; // 3 spaces between elements
+                        let total_content_height = logo_height + heading_height + shortcuts_height + spacing;
                         
-                        ui.add_space(top_margin.max(20.0));
+                        // Calculate vertical position to center the content
+                        let vertical_margin = (available_height - total_content_height) / 2.0;
                         
-                        ui.vertical_centered(|ui| {
-                            if let Some(logo) = &self.logo_texture {
-                                // Fixed: Use the correct image method with a single TextureId argument
-                                ui.image(logo);
-                                ui.add_space(20.0);
-                            }
-                            
-                            ui.heading("Welcome to ZZZ IDE");
-                            ui.add_space(20.0);
-                            
-                            ui.label("Shortcuts:");
-                            ui.label("Ctrl+O: Open folder");
-                            ui.label("Ctrl+P: Search files");
-                            ui.label("Ctrl+F: Find in current file");
-                            ui.label("Ctrl+Shift+F: Find in project");
-                            ui.label("Ctrl+M: Open settings");
-                            ui.label("Ctrl+S: Save current file");
-                            ui.add_space(20.0);
-                            
-                            ui.label("Start by opening a folder or creating a new file");
-                        });
+                        // Create centered layout
+                        ui.allocate_ui_with_layout(
+                            available_rect.size(),
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                // Add top margin to center content
+                                ui.add_space(vertical_margin.max(0.0));
+                                
+                                ui.vertical_centered(|ui| {
+                                    if let Some(logo) = &self.logo_texture {
+                                        ui.image(logo);
+                                        ui.add_space(20.0);
+                                    }
+                                    
+                                    ui.heading("Welcome to ZZZ IDE");
+                                    ui.add_space(20.0);
+                                    
+                                    ui.label("Shortcuts:");
+                                    ui.label("Ctrl+O: Open folder");
+                                    ui.label("Ctrl+P: Search files");
+                                    ui.label("Ctrl+F: Find in current file");
+                                    ui.label("Ctrl+Shift+F: Find in project");
+                                    ui.label("Ctrl+M: Open settings");
+                                    ui.label("Ctrl+S: Save current file");
+                                    ui.add_space(20.0);
+                                    
+                                    ui.label("Start by opening a folder or creating a new file");
+                                });
+                                
+                                // Add bottom margin to complete centering
+                                ui.add_space(vertical_margin.max(0.0));
+                            },
+                        );
                     });
             } else {
                 if let Some(active_index) = self.active_buffer_index {
