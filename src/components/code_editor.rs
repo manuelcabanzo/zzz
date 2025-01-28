@@ -1,10 +1,11 @@
 use eframe::egui;
+use image::GenericImageView;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +72,7 @@ pub struct CodeEditor {
     syntax_set: Arc<SyntaxSet>,
     theme_set: Arc<ThemeSet>,
     pub search_selected_line: Option<usize>,
+    pub logo_texture: Option<egui::TextureHandle>, // Add this
 }
 
 impl CodeEditor {
@@ -81,10 +83,11 @@ impl CodeEditor {
             active_buffer_index: None,
             current_file: None,
             search_highlight_text: None,
-            search_highlight_expires_at: None, // Initialize
+            search_highlight_expires_at: None,
             syntax_set: Arc::new(SyntaxSet::load_defaults_newlines()),
             theme_set: Arc::new(ThemeSet::load_defaults()),
             search_selected_line: None,
+            logo_texture: None,
         }
     }
 
@@ -109,6 +112,26 @@ impl CodeEditor {
         let index = self.buffers.len() - 1;
         self.active_buffer_index = Some(index);
         index
+    }
+
+    pub fn load_logo(&mut self, ctx: &egui::Context) {
+        if self.logo_texture.is_none() {
+            let logo_path = PathBuf::from("src/resources/blacksquare.png");
+            if let Ok(img) = image::open(&logo_path) {
+                let dimensions = img.dimensions(); // Now works with GenericImageView trait
+                let rgba = img.into_rgba8();
+                let pixels = rgba.as_flat_samples();
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [dimensions.0 as _, dimensions.1 as _],
+                    pixels.as_slice(),
+                );
+                self.logo_texture = Some(ctx.load_texture(
+                    "logo",
+                    image,
+                    egui::TextureOptions::default(),
+                ));
+            }
+        }
     }
 
     pub fn close_buffer(&mut self, index: usize) {
@@ -168,55 +191,91 @@ impl CodeEditor {
                 }
             });
 
-            if let Some(active_index) = self.active_buffer_index {
-                if let Some(buffer) = self.buffers.get_mut(active_index) {
-                    // Syntax selector
-                    egui::ComboBox::from_label("Syntax")
-                        .selected_text(&buffer.syntax)
-                        .show_ui(ui, |ui| {
-                            for syntax in self.syntax_set.syntaxes() {
-                                ui.selectable_value(&mut buffer.syntax, syntax.name.clone(), &syntax.name);
+            if self.buffers.is_empty() {
+                let rect = ui.available_rect_before_wrap();
+                
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none())
+                    .show_inside(ui, |ui| {
+                        let content_height = 300.0;
+                        let available_height = rect.height();
+                        let top_margin = (available_height - content_height) / 2.0;
+                        
+                        ui.add_space(top_margin.max(20.0));
+                        
+                        ui.vertical_centered(|ui| {
+                            if let Some(logo) = &self.logo_texture {
+                                // Fixed: Use the correct image method with a single TextureId argument
+                                ui.image(logo);
+                                ui.add_space(20.0);
                             }
+                            
+                            ui.heading("Welcome to ZZZ IDE");
+                            ui.add_space(20.0);
+                            
+                            ui.label("Shortcuts:");
+                            ui.label("Ctrl+O: Open folder");
+                            ui.label("Ctrl+P: Search files");
+                            ui.label("Ctrl+F: Find in current file");
+                            ui.label("Ctrl+Shift+F: Find in project");
+                            ui.label("Ctrl+M: Open settings");
+                            ui.label("Ctrl+S: Save current file");
+                            ui.add_space(20.0);
+                            
+                            ui.label("Start by opening a folder or creating a new file");
                         });
-
-                    // Calculate remaining height for the editor
-                    let header_height = ui.min_rect().height();
-                    let editor_height = available_height - header_height;
-                    let search_highlight = self.search_highlight_text.clone();
-                    let selected_line = self.search_selected_line;
-
-                    // Code editing area with syntax highlighting
-                    egui::ScrollArea::vertical()
-                        .id_source(format!("buffer_{}_scroll_area", active_index))
-                        .auto_shrink([false; 2])
-                        .max_height(editor_height)
-                        .show_viewport(ui, |ui, viewport| {
-                            let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-                                let mut layout_job = highlight_syntax(
-                                    ui,
-                                    string,
-                                    &self.syntax_set,
-                                    &self.theme_set,
-                                    &buffer.syntax,
-                                    search_highlight.as_deref(),
-                                    selected_line
-                                );
-                                layout_job.wrap.max_width = wrap_width;
-                                ui.fonts(|f| f.layout_job(layout_job))
-                            };
-
-                            if viewport.intersects(ui.max_rect()) {
-                                if ui.add_sized(
-                                    [ui.available_width(), editor_height],
-                                    egui::TextEdit::multiline(&mut buffer.content)
-                                        .desired_width(f32::INFINITY)
-                                        .font(egui::TextStyle::Monospace)
-                                        .layouter(&mut layouter)
-                                ).changed() {
-                                    buffer.is_modified = true;
+                    });
+            } else {
+                if let Some(active_index) = self.active_buffer_index {
+                    if let Some(buffer) = self.buffers.get_mut(active_index) {
+                        // Syntax selector
+                        egui::ComboBox::from_label("Syntax")
+                            .selected_text(&buffer.syntax)
+                            .show_ui(ui, |ui| {
+                                for syntax in self.syntax_set.syntaxes() {
+                                    ui.selectable_value(&mut buffer.syntax, syntax.name.clone(), &syntax.name);
                                 }
-                            }
-                        });
+                            });
+
+                        // Calculate remaining height for the editor
+                        let header_height = ui.min_rect().height();
+                        let editor_height = available_height - header_height;
+                        let search_highlight = self.search_highlight_text.clone();
+                        let selected_line = self.search_selected_line;
+
+                        // Code editing area with syntax highlighting
+                        egui::ScrollArea::vertical()
+                            .id_source(format!("buffer_{}_scroll_area", active_index))
+                            .auto_shrink([false; 2])
+                            .max_height(editor_height)
+                            .show_viewport(ui, |ui, viewport| {
+                                let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                                    let mut layout_job = highlight_syntax(
+                                        ui,
+                                        string,
+                                        &self.syntax_set,
+                                        &self.theme_set,
+                                        &buffer.syntax,
+                                        search_highlight.as_deref(),
+                                        selected_line
+                                    );
+                                    layout_job.wrap.max_width = wrap_width;
+                                    ui.fonts(|f| f.layout_job(layout_job))
+                                };
+
+                                if viewport.intersects(ui.max_rect()) {
+                                    if ui.add_sized(
+                                        [ui.available_width(), editor_height],
+                                        egui::TextEdit::multiline(&mut buffer.content)
+                                            .desired_width(f32::INFINITY)
+                                            .font(egui::TextStyle::Monospace)
+                                            .layouter(&mut layouter)
+                                    ).changed() {
+                                        buffer.is_modified = true;
+                                    }
+                                }
+                            });
+                    }
                 }
             }
         });

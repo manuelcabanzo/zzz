@@ -58,10 +58,13 @@ impl IDE {
         // Create emulator panel first and let it initialize
         let emulator_panel = EmulatorPanel::new();
         
+        let mut code_editor = CodeEditor::new();
+        code_editor.load_logo(&cc.egui_ctx);
+        
         // Create IDE instance with state-derived values
         let mut ide = Self {
             file_modal: FileModal::new(),
-            code_editor: CodeEditor::new(),
+            code_editor,
             console_panel: ConsolePanel::new(),
             emulator_panel,  // Use the pre-initialized panel
             settings_modal: SettingsModal::new(),
