@@ -117,10 +117,38 @@ impl SettingsModal {
 
         ui.horizontal(|ui| {
             ui.label("AI Model:");
-            if ui.text_edit_singleline(&mut self.ai_model).changed() {
+            let models = vec![
+                "deepseek-ai/DeepSeek-R1",
+                "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo-128K",
+                "Qwen/Qwen2-VL-72B-Instruct",
+                "Other",
+            ];
+            let mut selected_model = self.ai_model.clone();
+            egui::ComboBox::from_label("Select AI Model")
+                .selected_text(selected_model.clone())
+                .show_ui(ui, |ui| {
+                    for model in &models {
+                        ui.selectable_value(&mut selected_model, model.to_string(), model.to_string());
+                    }
+                });
+            if selected_model != self.ai_model {
+                if selected_model == "Other" {
+                    self.ai_model = String::new();
+                } else {
+                    self.ai_model = selected_model;
+                }
                 self.ai_model_changed = true;
             }
         });
+
+        if self.ai_model.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Custom Model:");
+                if ui.text_edit_singleline(&mut self.ai_model).changed() {
+                    self.ai_model_changed = true;
+                }
+            });
+        }
 
         ui.add_space(5.0);
         ui.label("Your API key and model are stored locally and used only for AI assistant functionality.");
