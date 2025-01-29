@@ -45,6 +45,7 @@ pub struct IDE {
     pub search_results: Vec<SearchResult>,
     pub search_highlight_text: Option<String>,
     search_focus_requested: bool, // Add this field
+    pub ai_model: String, // Add this field
 }
 
 impl IDE {
@@ -85,6 +86,7 @@ impl IDE {
             search_results: Vec::new(),
             search_highlight_text: None,
             search_focus_requested: false, // Initialize the field
+            ai_model: state.ai_model.clone(), // Initialize the field
         };
         
         // Enter runtime after creation
@@ -582,6 +584,17 @@ impl IDE {
             // Update app state
             let mut app_state = AppState::load();
             app_state.ai_api_key = self.settings_modal.get_api_key();
+            let _ = app_state.save();
+        }
+        
+        if self.settings_modal.take_ai_model_changed() {
+            let new_model = self.settings_modal.get_ai_model();
+            self.ai_model = new_model.clone();
+            self.ai_assistant.update_model(new_model);
+                        
+            // Update app state
+            let mut app_state = AppState::load();
+            app_state.ai_model = self.settings_modal.get_ai_model();
             let _ = app_state.save();
         }
         

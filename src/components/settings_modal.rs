@@ -15,6 +15,8 @@ pub struct SettingsModal {
     pub current_theme: Theme,
     api_key: String, // Add field for API key
     api_key_changed: bool, // Track if API key has changed
+    ai_model: String, // Add field for AI model
+    ai_model_changed: bool, // Track if AI model has changed
 }
 
 impl SettingsModal {
@@ -25,6 +27,8 @@ impl SettingsModal {
             current_theme: Theme::default(),
             api_key: String::new(),
             api_key_changed: false,
+            ai_model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
+            ai_model_changed: false,
         }
     }
 
@@ -42,6 +46,23 @@ impl SettingsModal {
     pub fn take_api_key_changed(&mut self) -> bool {
         let changed = self.api_key_changed;
         self.api_key_changed = false;
+        changed
+    }
+
+    // Add getter for AI model
+    pub fn get_ai_model(&self) -> String {
+        self.ai_model.clone()
+    }
+
+    // Add setter for AI model
+    pub fn set_ai_model(&mut self, model: String) {
+        self.ai_model = model;
+    }
+
+    // Add method to check and reset the changed flag
+    pub fn take_ai_model_changed(&mut self) -> bool {
+        let changed = self.ai_model_changed;
+        self.ai_model_changed = false;
         changed
     }
 
@@ -91,9 +112,18 @@ impl SettingsModal {
                 self.api_key_changed = true;
             }
         });
-        
+
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.label("AI Model:");
+            if ui.text_edit_singleline(&mut self.ai_model).changed() {
+                self.ai_model_changed = true;
+            }
+        });
+
         ui.add_space(5.0);
-        ui.label("Your API key is stored locally and used only for AI assistant functionality.");
+        ui.label("Your API key and model are stored locally and used only for AI assistant functionality.");
     }
 
     fn show_personalization_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

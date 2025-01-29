@@ -27,6 +27,7 @@ pub struct AppState {
     // Settings
     pub current_theme: Theme,
     pub ai_api_key: String,
+    pub ai_model: String, // Add this field
 }
 
 // Custom serialization for PathBuf
@@ -71,6 +72,7 @@ impl Default for AppState {
             ai_assistant_panel_visible: false,
             current_theme: Theme::default(),
             ai_api_key: String::new(),
+            ai_model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(), // Default model
         }
     }
 }
@@ -114,6 +116,7 @@ impl AppState {
         self.ai_assistant_panel_visible = ide.show_ai_panel;  // Add this line
         self.current_theme = ide.settings_modal.current_theme.clone();
         self.ai_api_key = ide.settings_modal.get_api_key();
+        self.ai_model = ide.ai_model.clone(); // Add this line
 
         // Save buffer states
         self.open_buffers = ide.code_editor.buffers.iter().map(|buffer| {
@@ -148,6 +151,7 @@ impl AppState {
 
         // Also update the AI Assistant's API key
         ide.ai_assistant.update_api_key(self.ai_api_key.clone());  // Add this line
+        ide.ai_model = self.ai_model.clone(); // Add this line
 
         // Restore buffers
         for buffer_state in &self.open_buffers {

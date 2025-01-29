@@ -62,6 +62,7 @@ pub struct AIAssistant {
     panel_height: f32,
     runtime: Arc<Runtime>,
     last_ai_response: Option<String>,
+    model: String, // Add field for AI model
 }
 
 impl AIAssistant {
@@ -83,8 +84,14 @@ impl AIAssistant {
             context_window: 5,
             debug_messages: VecDeque::with_capacity(10),
             panel_height: 600.0,
-            runtime,last_ai_response: None,
+            runtime,
+            last_ai_response: None,
+            model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(), // Default model
         }
+    }
+
+    pub fn update_model(&mut self, new_model: String) {
+        self.model = new_model;
     }
 
     fn format_chat_messages(&self, file_content: &str, question: &str) -> Vec<ChatMessage> {
@@ -376,10 +383,11 @@ impl AIAssistant {
                                 let tx = self.tx.clone();
                                 let api_key = self.api_key.clone();
                                 let client = self.http_client.clone();
-    
+                                let model = self.model.clone(); // Use the selected model
+
                                 self.runtime.spawn(async move {
                                     let request = ChatRequest {
-                                        model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
+                                        model,
                                         messages,
                                     };
                                 
