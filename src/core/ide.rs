@@ -558,6 +558,17 @@ impl IDE {
                 self.emulator_panel.show(ui);
             });
 
+
+        ctx.data_mut(|data| {
+            let frame_count = data.get_temp::<u32>(egui::Id::new("frame_count")).unwrap_or(0);
+            let should_update = frame_count % 3 == 0; // Update every 3 frames
+            data.insert_temp(egui::Id::new("frame_count"), frame_count + 1);            
+            
+            if !should_update {
+                return;
+            }
+        });
+
         if let Some(new_project_path) = self.file_modal.project_path.clone() {
             if self.console_panel.project_path.as_ref() != Some(&new_project_path) {
                 self.console_panel.set_project_path(new_project_path);
@@ -565,7 +576,10 @@ impl IDE {
         }
 
         if let Some(project_path) = &self.file_modal.project_path {
-            self.settings_modal.update_git_manager(Some(project_path.clone()));
+            // Only update Git manager when necessary
+            if self.settings_modal.show {
+                self.settings_modal.update_git_manager(Some(project_path.clone()));
+            }
         }
         
         self.show_search_modal(ctx);
@@ -586,17 +600,18 @@ impl IDE {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             self.handle_keyboard_shortcuts(ctx, ui);  // Keep existing keyboard shortcuts
-            
-            // Calculate available height by getting the panel's size
+
             let available_space = ui.available_size();
             let console_height = if self.show_console_panel { 280.0 } else { 0.0 };
             let editor_height = available_space.y - console_height;
             
-            // Remove the ScrollArea and let the CodeEditor handle its own scrolling
             ui.with_layout(
                 egui::Layout::top_down(egui::Align::LEFT).with_main_justify(true),
                 |ui| {
-                    self.code_editor.show(ui, editor_height);
+                    let editor_id = ui.id().with("code_editor");
+                    if !ctx.is_being_dragged(editor_id) {
+                        self.code_editor.show(ui, editor_height);
+                    }
                 },
             );
         });

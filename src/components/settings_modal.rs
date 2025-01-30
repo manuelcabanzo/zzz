@@ -105,11 +105,16 @@ impl SettingsModal {
         ui.add_space(10.0);
 
         if let Some(git_manager) = &self.git_manager {
+            // Check if checkout is in progress
+            if git_manager.is_checkout_in_progress() {
+                ui.spinner();
+                ui.label("Checkout in progress...");
+                return;
+            }
+
             if self.commits.is_empty() {
-                // Try to fetch commits if the list is empty
                 match git_manager.get_commits() {
                     Ok(commits) => {
-                        println!("Fetched {} commits", commits.len());
                         self.commits = commits;
                     }
                     Err(e) => {
@@ -122,27 +127,38 @@ impl SettingsModal {
             if self.commits.is_empty() {
                 ui.label("No commits found in repository.");
             } else {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for commit in &self.commits {
-                        ui.add_space(5.0);
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.strong(format!("Commit: {}", &commit.hash[..8]));
-                                ui.label(format!("| {}", commit.date.format("%Y-%m-%d %H:%M")));
-                            });
-                            ui.label(format!("Author: {}", commit.author));
-                            ui.label(&commit.message);
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .id_source("git_history_scroll")
+                    .show(ui, |ui| {
+                        for commit in &self.commits {
+                            ui.add_space(5.0);
+                            let is_selected = self.selected_commit.as_ref() == Some(&commit.hash);
                             
-                            if ui.button("Checkout").clicked() {
-                                if let Err(e) = git_manager.checkout_commit(&commit.hash) {
-                                    println!("Checkout error: {}", e);
+                            egui::Frame::none()
+                                .fill(if is_selected {
+                                    ui.style().visuals.selection.bg_fill
                                 } else {
-                                    self.selected_commit = Some(commit.hash.clone());
-                                }
-                            }
-                        });
-                    }
-                });
+                                    ui.style().visuals.window_fill
+                                })
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.strong(format!("Commit: {}", &commit.hash[..8]));
+                                        ui.label(format!("| {}", commit.date.format("%Y-%m-%d %H:%M")));
+                                    });
+                                    ui.label(format!("Author: {}", commit.author));
+                                    ui.label(&commit.message);
+                                    
+                                    if ui.button("Checkout").clicked() && !is_selected {
+                                        if let Err(e) = git_manager.checkout_commit(&commit.hash) {
+                                            println!("Checkout error: {}", e);
+                                        } else {
+                                            self.selected_commit = Some(commit.hash.clone());
+                                        }
+                                    }
+                                });
+                        }
+                    });
             }
         } else {
             ui.label("No Git repository found in the current project.");

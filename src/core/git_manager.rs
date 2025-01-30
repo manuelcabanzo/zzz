@@ -2,6 +2,8 @@ use std::process::Command;
 use std::path::PathBuf;
 use chrono::{DateTime, Local};
 use serde::{Serialize, Deserialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommit {
@@ -13,11 +15,15 @@ pub struct GitCommit {
 
 pub struct GitManager {
     repo_path: PathBuf,
+    is_checking_out: Arc<AtomicBool>,
 }
 
 impl GitManager {
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+        Self { 
+            repo_path,
+            is_checking_out: Arc::new(AtomicBool::new(false))
+        }
     }
 
     pub fn is_git_repo(&self) -> bool {
@@ -129,24 +135,49 @@ impl GitManager {
     }
     
     pub fn checkout_commit(&self, commit_hash: &str) -> Result<(), String> {
+        // Prevent multiple concurrent checkouts
+        if self.is_checking_out.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err("Another checkout operation is in progress".to_string());
+        }
+
+        let result = self.perform_checkout(commit_hash);
+        self.is_checking_out.store(false, Ordering::SeqCst);
+        result
+    }
+
+    fn perform_checkout(&self, commit_hash: &str) -> Result<(), String> {
         // First stash any current changes
-        let _ = Command::new("git")
-            .args(&["stash"])
+        let stash_output = Command::new("git")
+            .args(&["stash", "save", "--include-untracked"])
             .current_dir(&self.repo_path)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Failed to stash changes: {}", e))?;
+
+        if !stash_output.status.success() {
+            return Err("Failed to stash current changes".to_string());
+        }
 
         // Checkout the specific commit
-        let output = Command::new("git")
+        let checkout_output = Command::new("git")
             .args(&["checkout", commit_hash])
             .current_dir(&self.repo_path)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Failed to execute checkout: {}", e))?;
 
-        if !output.status.success() {
+        if !checkout_output.status.success() {
+            // Try to restore the stash if checkout fails
+            let _ = Command::new("git")
+                .args(&["stash", "pop"])
+                .current_dir(&self.repo_path)
+                .output();
+            
             return Err("Failed to checkout commit".to_string());
         }
 
         Ok(())
+    }
+
+    pub fn is_checkout_in_progress(&self) -> bool {
+        self.is_checking_out.load(Ordering::SeqCst)
     }
 }
