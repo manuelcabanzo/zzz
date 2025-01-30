@@ -15,6 +15,8 @@ use std::rc::Rc;
 use crate::core::file_system::FileSystem;
 use std::path::Path;
 
+use super::git_manager::GitManager;
+
 #[derive(Clone)]
 pub struct SearchResult {
     pub line_number: usize,
@@ -92,6 +94,14 @@ impl IDE {
         // Enter runtime after creation
         let _guard = tokio_runtime.enter();
         
+        if let Some(project_path) = &ide.file_modal.project_path {
+            let git_manager = GitManager::new(project_path.clone());
+            match git_manager.initialize() {
+                Ok(_) => ide.console_panel.log("Git repository initialized successfully"),
+                Err(e) => ide.console_panel.log(&format!("Git initialization error: {}", e))
+            }
+        }
+
         // Apply remaining state
         state.apply_to_ide(&mut ide);
         
@@ -544,6 +554,20 @@ impl IDE {
             }
         }
 
+        if let Some(project_path) = &self.file_modal.project_path {
+            let git_manager = GitManager::new(project_path.clone());
+            if git_manager.is_git_repo() && self.code_editor.get_active_buffer().is_none() {
+                // If it's a git repo but no buffer is active, try to initialize
+                match git_manager.initialize() {
+                    Ok(_) => {
+                        // Force UI refresh
+                        ctx.request_repaint();
+                    }
+                    Err(e) => self.console_panel.log(&format!("Git error: {}", e))
+                }
+            }
+        }
+        
         self.show_search_modal(ctx);
         self.console_panel.update(ctx);
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));

@@ -1,12 +1,13 @@
+use std::path::PathBuf;
+
 use eframe::egui;
-use crate::utils::themes::{Theme, custom_theme};
+use crate::{core::git_manager::{GitCommit, GitManager}, utils::themes::{custom_theme, Theme}};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
     Personalization,
-    // General,
-    // Editor,
-    AI, // Add new tab for AI settings
+    AI,
+    Git,
 }
 
 pub struct SettingsModal {
@@ -17,6 +18,9 @@ pub struct SettingsModal {
     api_key_changed: bool, // Track if API key has changed
     ai_model: String, // Add field for AI model
     ai_model_changed: bool, // Track if AI model has changed
+    git_manager: Option<GitManager>,
+    commits: Vec<GitCommit>,
+    selected_commit: Option<String>,
 }
 
 impl SettingsModal {
@@ -29,6 +33,9 @@ impl SettingsModal {
             api_key_changed: false,
             ai_model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
             ai_model_changed: false,
+            git_manager: None,
+            commits: Vec::new(),
+            selected_commit: None,
         }
     }
 
@@ -66,6 +73,54 @@ impl SettingsModal {
         changed
     }
 
+    pub fn update_git_manager(&mut self, project_path: Option<PathBuf>) {
+        if let Some(path) = project_path {
+            let git_manager = GitManager::new(path);
+            if git_manager.is_git_repo() {
+                if let Ok(commits) = git_manager.get_commits() {
+                    self.commits = commits;
+                }
+                self.git_manager = Some(git_manager);
+            } else {
+                self.git_manager = None;
+                self.commits.clear();
+            }
+        } else {
+            self.git_manager = None;
+            self.commits.clear();
+        }
+    }
+
+    fn show_git_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Git History");
+        ui.add_space(10.0);
+
+        if let Some(git_manager) = &self.git_manager {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for commit in &self.commits {
+                    let text = format!(
+                        "{}\nAuthor: {}\nDate: {}\n{}",
+                        &commit.hash[..8],
+                        commit.author,
+                        commit.date.format("%Y-%m-%d %H:%M:%S"),
+                        commit.message
+                    );
+
+                    if ui.button(text).clicked() {
+                        if let Err(e) = git_manager.checkout_commit(&commit.hash) {
+                            // Handle error (maybe show in console)
+                            println!("Failed to checkout commit: {}", e);
+                        } else {
+                            self.selected_commit = Some(commit.hash.clone());
+                        }
+                    }
+                }
+            });
+        } else {
+            ui.label("No Git repository found in the current project.");
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.show {
             return;
@@ -79,26 +134,21 @@ impl SettingsModal {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 ui.set_min_size(modal_size);
-                ui.heading("Settings");
-                ui.add_space(10.0);
-
-                egui::TopBottomPanel::top("settings_tabs").show_inside(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.settings_tab, SettingsTab::Personalization, "Personalization");
-                        // ui.selectable_value(&mut self.settings_tab, SettingsTab::General, "General");
-                        // ui.selectable_value(&mut self.settings_tab, SettingsTab::Editor, "Editor");
-                        ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant"); // Add new tab
-                    });
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut self.settings_tab,
+                        SettingsTab::Personalization,
+                        "Personalization"
+                    );
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Git, "Git");
                 });
 
-                egui::CentralPanel::default().show_inside(ui, |ui| {
-                    match self.settings_tab {
-                        SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
-                        // SettingsTab::General => self.show_general_settings(ui),
-                        // SettingsTab::Editor => self.show_editor_settings(ui),
-                        SettingsTab::AI => self.show_ai_settings(ui), // Add new tab handler
-                    }
-                });    
+                match self.settings_tab {
+                    SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
+                    SettingsTab::AI => self.show_ai_settings(ui),
+                    SettingsTab::Git => self.show_git_settings(ui),
+                }
             });
     }
 

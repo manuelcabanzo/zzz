@@ -3,6 +3,7 @@ pub mod core {
     pub mod file_system;
     pub mod terminal;
     pub mod app_state;
+    pub mod git_manager;
 }
 
 pub mod utils {
