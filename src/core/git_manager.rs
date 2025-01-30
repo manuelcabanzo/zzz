@@ -21,28 +21,60 @@ impl GitManager {
     }
 
     pub fn is_git_repo(&self) -> bool {
-        // First check the direct path
+        // Enhanced logging version
         let git_dir = self.repo_path.join(".git");
         let direct_check = git_dir.exists() && git_dir.is_dir();
         
+        println!("Checking git repo at: {}", self.repo_path.display()); // Add this
+        println!("Direct check: {}", direct_check); // Add this
+
         if direct_check {
             return true;
         }
 
-        // If direct check fails, try git rev-parse
+        // Enhanced command execution logging
         let output = Command::new("git")
             .args(&["rev-parse", "--git-dir"])
             .current_dir(&self.repo_path)
-            .output();
+            .output()
+            .map_err(|e| {
+                println!("Git command execution error: {}", e); // Add this
+                e
+            });
 
         match output {
-            Ok(output) => output.status.success(),
+            Ok(output) => {
+                println!("Git rev-parse output: {:?}", output); // Add this
+                output.status.success()
+            },
             Err(_) => false
         }
     }
 
+    pub fn initialize(&self) -> Result<(), String> {
+        println!("Initializing git repo at: {}", self.repo_path.display()); // Add this
+        
+        let output = Command::new("git")
+            .args(&["status"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| {
+                println!("Git status command error: {}", e); // Add this
+                format!("Failed to execute git command: {}", e)
+            })?;
+
+        println!("Git status output: {:?}", output); // Add this
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            println!("Git status failed: {}", stderr); // Add this
+            return Err(format!("Git status failed: {}", stderr));
+        }
+
+        Ok(())
+    }
+
     pub fn get_commits(&self) -> Result<Vec<GitCommit>, String> {
-        // First verify it's a git repo
         if !self.is_git_repo() {
             return Err("Not a git repository".to_string());
         }
@@ -50,26 +82,33 @@ impl GitManager {
         let output = Command::new("git")
             .args(&[
                 "log",
-                "--pretty=format:%H|||%an|||%ai|||%s",  // Changed date format to ISO
-                "--date=iso"
+                "--pretty=format:%H|||%an|||%ai|||%s",
+                "--date=iso",
+                "--all"  // Add this to show commits from all branches
             ])
             .current_dir(&self.repo_path)
             .output()
             .map_err(|e| format!("Git command failed: {}", e))?;
 
         if !output.status.success() {
-            return Err("Failed to get git history".to_string());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to get git history: {}", stderr));
         }
 
         let output_str = String::from_utf8(output.stdout)
             .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
 
+        if output_str.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let commits = output_str
             .lines()
+            .filter(|line| !line.is_empty())
             .map(|line| {
                 let parts: Vec<&str> = line.split("|||").collect();
                 if parts.len() != 4 {
-                    return Err(format!("Invalid commit line format: {}", line));
+                    return Err(format!("Invalid commit line format: '{}'", line));
                 }
 
                 let date = DateTime::parse_from_rfc3339(parts[2])
@@ -87,24 +126,6 @@ impl GitManager {
             .collect::<Result<Vec<_>, String>>()?;
 
         Ok(commits)
-    }
-    pub fn initialize(&self) -> Result<(), String> {
-        if !self.is_git_repo() {
-            return Err("Not a git repository".to_string());
-        }
-        
-        // Test git command execution
-        let output = Command::new("git")
-            .args(&["status"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| format!("Failed to execute git command: {}", e))?;
-
-        if !output.status.success() {
-            return Err("Git status command failed".to_string());
-        }
-
-        Ok(())
     }
     
     pub fn checkout_commit(&self, commit_hash: &str) -> Result<(), String> {

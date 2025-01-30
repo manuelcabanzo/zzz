@@ -74,20 +74,29 @@ impl SettingsModal {
     }
 
     pub fn update_git_manager(&mut self, project_path: Option<PathBuf>) {
+        self.commits.clear();
+        self.git_manager = None;
+
         if let Some(path) = project_path {
-            let git_manager = GitManager::new(path);
-            if git_manager.is_git_repo() {
-                if let Ok(commits) = git_manager.get_commits() {
-                    self.commits = commits;
-                }
-                self.git_manager = Some(git_manager);
-            } else {
-                self.git_manager = None;
-                self.commits.clear();
+            println!("Updating git manager for path: {}", path.display()); // Add this
+            let git_manager = GitManager::new(path.clone());
+            
+            if !git_manager.is_git_repo() {
+                println!("Path is not a git repository: {}", path.display()); // Add this
+                return;
             }
-        } else {
-            self.git_manager = None;
-            self.commits.clear();
+
+            match git_manager.get_commits() {
+                Ok(commits) => {
+                    println!("Found {} commits", commits.len()); // Add this
+                    self.commits = commits;
+                    self.git_manager = Some(git_manager);
+                },
+                Err(e) => {
+                    println!("Error getting commits: {}", e); // Add this
+                    self.commits.clear();
+                }
+            }
         }
     }
 
@@ -96,26 +105,45 @@ impl SettingsModal {
         ui.add_space(10.0);
 
         if let Some(git_manager) = &self.git_manager {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for commit in &self.commits {
-                    let text = format!(
-                        "{}\nAuthor: {}\nDate: {}\n{}",
-                        &commit.hash[..8],
-                        commit.author,
-                        commit.date.format("%Y-%m-%d %H:%M:%S"),
-                        commit.message
-                    );
-
-                    if ui.button(text).clicked() {
-                        if let Err(e) = git_manager.checkout_commit(&commit.hash) {
-                            // Handle error (maybe show in console)
-                            println!("Failed to checkout commit: {}", e);
-                        } else {
-                            self.selected_commit = Some(commit.hash.clone());
-                        }
+            if self.commits.is_empty() {
+                // Try to fetch commits if the list is empty
+                match git_manager.get_commits() {
+                    Ok(commits) => {
+                        println!("Fetched {} commits", commits.len());
+                        self.commits = commits;
+                    }
+                    Err(e) => {
+                        ui.label(format!("Error fetching commits: {}", e));
+                        return;
                     }
                 }
-            });
+            }
+
+            if self.commits.is_empty() {
+                ui.label("No commits found in repository.");
+            } else {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for commit in &self.commits {
+                        ui.add_space(5.0);
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong(format!("Commit: {}", &commit.hash[..8]));
+                                ui.label(format!("| {}", commit.date.format("%Y-%m-%d %H:%M")));
+                            });
+                            ui.label(format!("Author: {}", commit.author));
+                            ui.label(&commit.message);
+                            
+                            if ui.button("Checkout").clicked() {
+                                if let Err(e) = git_manager.checkout_commit(&commit.hash) {
+                                    println!("Checkout error: {}", e);
+                                } else {
+                                    self.selected_commit = Some(commit.hash.clone());
+                                }
+                            }
+                        });
+                    }
+                });
+            }
         } else {
             ui.label("No Git repository found in the current project.");
         }

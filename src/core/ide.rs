@@ -95,10 +95,20 @@ impl IDE {
         let _guard = tokio_runtime.enter();
         
         if let Some(project_path) = &ide.file_modal.project_path {
+            println!("Project path: {}", project_path.display());
             let git_manager = GitManager::new(project_path.clone());
+            
+            // Initialize Git and update settings modal
             match git_manager.initialize() {
-                Ok(_) => ide.console_panel.log("Git repository initialized successfully"),
-                Err(e) => ide.console_panel.log(&format!("Git initialization error: {}", e))
+                Ok(_) => {
+                    ide.console_panel.log("Git repository initialized successfully");
+                    // Force update the settings modal's Git manager
+                    ide.settings_modal.update_git_manager(Some(project_path.clone()));
+                },
+                Err(e) => {
+                    ide.console_panel.log(&format!("Git initialization error: {}", e));
+                    ide.settings_modal.update_git_manager(None);
+                }
             }
         }
 
@@ -555,17 +565,7 @@ impl IDE {
         }
 
         if let Some(project_path) = &self.file_modal.project_path {
-            let git_manager = GitManager::new(project_path.clone());
-            if git_manager.is_git_repo() && self.code_editor.get_active_buffer().is_none() {
-                // If it's a git repo but no buffer is active, try to initialize
-                match git_manager.initialize() {
-                    Ok(_) => {
-                        // Force UI refresh
-                        ctx.request_repaint();
-                    }
-                    Err(e) => self.console_panel.log(&format!("Git error: {}", e))
-                }
-            }
+            self.settings_modal.update_git_manager(Some(project_path.clone()));
         }
         
         self.show_search_modal(ctx);
