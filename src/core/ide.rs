@@ -637,12 +637,11 @@ impl IDE {
             let _ = app_state.save();
         }
         
-        // Handle the console panel and settings modal as well
         if self.show_console_panel {
             egui::TopBottomPanel::bottom("console_panel")
                 .resizable(false)
                 .exact_height(280.0)
-                .show_animated(ctx, self.show_console_panel, |ui| {
+                .show(ctx, |ui| {
                     self.console_panel.show(ui);
                 });
         }

@@ -146,34 +146,40 @@ impl GitManager {
     }
 
     fn perform_checkout(&self, commit_hash: &str) -> Result<(), String> {
-        // First stash any current changes
-        let stash_output = Command::new("git")
-            .args(&["stash", "save", "--include-untracked"])
+        // Reset any local changes
+        let reset_output = Command::new("git")
+            .args(&["reset", "--hard", "HEAD"])
             .current_dir(&self.repo_path)
             .output()
-            .map_err(|e| format!("Failed to stash changes: {}", e))?;
-
-        if !stash_output.status.success() {
-            return Err("Failed to stash current changes".to_string());
+            .map_err(|e| format!("Failed to reset: {}", e))?;
+    
+        if !reset_output.status.success() {
+            return Err("Failed to reset changes".to_string());
         }
-
-        // Checkout the specific commit
+    
+        // Clean untracked files
+        let clean_output = Command::new("git")
+            .args(&["clean", "-fd"])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| format!("Failed to clean: {}", e))?;
+    
+        if !clean_output.status.success() {
+            return Err("Failed to clean repository".to_string());
+        }
+    
+        // Checkout with force
         let checkout_output = Command::new("git")
-            .args(&["checkout", commit_hash])
+            .args(&["checkout", "--force", commit_hash])
             .current_dir(&self.repo_path)
             .output()
-            .map_err(|e| format!("Failed to execute checkout: {}", e))?;
-
+            .map_err(|e| format!("Failed to checkout: {}", e))?;
+    
         if !checkout_output.status.success() {
-            // Try to restore the stash if checkout fails
-            let _ = Command::new("git")
-                .args(&["stash", "pop"])
-                .current_dir(&self.repo_path)
-                .output();
-            
-            return Err("Failed to checkout commit".to_string());
+            return Err(format!("Checkout failed: {}", 
+                String::from_utf8_lossy(&checkout_output.stderr)));
         }
-
+    
         Ok(())
     }
 

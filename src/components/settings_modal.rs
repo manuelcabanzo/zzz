@@ -100,7 +100,7 @@ impl SettingsModal {
         }
     }
 
-    fn show_git_settings(&mut self, ui: &mut egui::Ui) {
+    fn show_git_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Git History");
         ui.add_space(10.0);
 
@@ -154,6 +154,7 @@ impl SettingsModal {
                                             println!("Checkout error: {}", e);
                                         } else {
                                             self.selected_commit = Some(commit.hash.clone());
+                                            ctx.request_repaint();  // Simple repaint request
                                         }
                                     }
                                 });
@@ -191,7 +192,7 @@ impl SettingsModal {
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
-                    SettingsTab::Git => self.show_git_settings(ui),
+                    SettingsTab::Git => self.show_git_settings(ui, ctx),
                 }
             });
     }

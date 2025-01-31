@@ -415,6 +415,25 @@ impl FileModal {
         self.expanded_folders.clear();
     }
 
+    pub fn reload_all_buffers(&mut self, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
+        let buffers = code_editor.buffers.drain(..).collect::<Vec<_>>();
+        
+        for mut buffer in buffers {
+            if let Some(file_path) = &buffer.file_path {
+                match self.file_system.as_ref().unwrap().open_file(Path::new(file_path)) {
+                    Ok(content) => {
+                        buffer.content = content;
+                        buffer.is_modified = false;
+                        code_editor.buffers.push(buffer);
+                    },
+                    Err(e) => log(&format!("Failed to reload {}: {}", file_path, e))
+                }
+            } else {
+                code_editor.buffers.push(buffer);
+            }
+        }
+    }
+    
     pub fn save_current_file(&self, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
         if let Some(buffer) = code_editor.get_active_buffer() {
             if let Some(file_path) = &buffer.file_path {

@@ -15,6 +15,11 @@ pub struct CursorPosition {
     pub column: usize,
 }
 
+#[derive(Default)]
+struct HighlightCache {
+    jobs: std::collections::HashMap<(String, String), egui::text::LayoutJob>,
+}
+
 fn determine_syntax_from_path(path: &Path, syntax_set: &SyntaxSet) -> String {
     syntax_set
         .find_syntax_for_file(path)
@@ -73,6 +78,7 @@ pub struct CodeEditor {
     theme_set: Arc<ThemeSet>,
     pub search_selected_line: Option<usize>,
     pub logo_texture: Option<egui::TextureHandle>,
+    highlight_cache: HighlightCache,
 }
 
 impl CodeEditor {
@@ -88,6 +94,7 @@ impl CodeEditor {
             theme_set: Arc::new(ThemeSet::load_defaults()),
             search_selected_line: None,
             logo_texture: None,
+            highlight_cache: HighlightCache::default(),
         }
     }
 
@@ -266,13 +273,13 @@ impl CodeEditor {
                             .show_viewport(ui, |ui, viewport| {
                                 let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
                                     let mut layout_job = highlight_syntax(
-                                        ui,
                                         string,
                                         &self.syntax_set,
                                         &self.theme_set,
                                         &buffer.syntax,
                                         search_highlight.as_deref(),
-                                        selected_line
+                                        selected_line,
+                                        &mut self.highlight_cache,  // Pass the cache
                                     );
                                     layout_job.wrap.max_width = wrap_width;
                                     ui.fonts(|f| f.layout_job(layout_job))
@@ -346,19 +353,25 @@ impl CodeEditor {
 }
 
 fn highlight_syntax(
-    _ui: &egui::Ui,
     code: &str,
     syntax_set: &SyntaxSet,
     theme_set: &ThemeSet,
     current_syntax: &str,
     search_highlight: Option<&str>,
     selected_line: Option<usize>,
+    cache: &mut HighlightCache,
 ) -> egui::text::LayoutJob {
     let syntax = syntax_set.find_syntax_by_name(current_syntax)
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
     let mut highlighter = HighlightLines::new(syntax, &theme_set.themes["base16-ocean.dark"]);
 
     let mut job = egui::text::LayoutJob::default();
+
+    let cache_key = (current_syntax.to_string(), code.to_string());
+    
+    if let Some(job) = cache.jobs.get(&cache_key) {
+        return job.clone();
+    }
 
     for (line_index, line) in LinesWithEndings::from(code).enumerate() {
         // Check if this line should be highlighted
@@ -396,6 +409,7 @@ fn highlight_syntax(
         }
     }
 
+    cache.jobs.insert(cache_key, job.clone());
     job
 }
 
