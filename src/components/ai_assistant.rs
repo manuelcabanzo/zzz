@@ -62,12 +62,14 @@ pub struct AIAssistant {
     panel_height: f32,
     runtime: Arc<Runtime>,
     last_ai_response: Option<String>,
-    model: String, // Add field for AI model
+    model: String,
 }
 
 impl AIAssistant {
     const MAX_RETRIES: u32 = 3;
     const RETRY_DELAY_MS: u64 = 1000;
+    const MAX_CHAT_HISTORY: usize = 100;
+    const MAX_DEBUG_MESSAGES: usize = 10;
 
     pub fn new(api_key: String, runtime: Arc<Runtime>) -> Self {
         let (tx, rx) = mpsc::channel(32);
@@ -75,18 +77,18 @@ impl AIAssistant {
         Self {
             api_key,
             input_text: String::new(),
-            chat_history: VecDeque::with_capacity(100),
+            chat_history: VecDeque::with_capacity(Self::MAX_CHAT_HISTORY),
             is_loading: false,
             http_client: Client::new(),
             tx,
             rx,
             scroll_to_bottom: false,
             context_window: 5,
-            debug_messages: VecDeque::with_capacity(10),
+            debug_messages: VecDeque::with_capacity(Self::MAX_DEBUG_MESSAGES),
             panel_height: 600.0,
             runtime,
             last_ai_response: None,
-            model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(), // Default model
+            model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
         }
     }
 
@@ -97,7 +99,6 @@ impl AIAssistant {
     fn format_chat_messages(&self, file_content: &str, question: &str) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
         
-        // System message to set the context
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
@@ -107,7 +108,6 @@ impl AIAssistant {
             ),
         });
 
-        // Add previous conversation context
         for msg in self.chat_history.iter().take(self.context_window) {
             messages.push(ChatMessage {
                 role: if msg.is_user { "user" } else { "assistant" }.to_string(),
@@ -115,7 +115,6 @@ impl AIAssistant {
             });
         }
 
-        // Add the current question
         messages.push(ChatMessage {
             role: "user".to_string(),
             content: question.to_string(),
@@ -193,7 +192,7 @@ impl AIAssistant {
     fn add_debug_message(&mut self, msg: String) {
         println!("AI Assistant Debug: {}", msg);
         self.debug_messages.push_back(msg);
-        while self.debug_messages.len() > 10 {
+        while self.debug_messages.len() > Self::MAX_DEBUG_MESSAGES {
             self.debug_messages.pop_front();
         }
     }
@@ -208,7 +207,7 @@ impl AIAssistant {
             timestamp,
         });
         
-        while self.chat_history.len() > 100 {
+        while self.chat_history.len() > Self::MAX_CHAT_HISTORY {
             self.chat_history.pop_front();
         }
         
@@ -218,7 +217,157 @@ impl AIAssistant {
     pub fn update_api_key(&mut self, new_key: String) {
         self.api_key = new_key;
     }
-    
+
+    fn render_chat_history(&self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .max_height(self.panel_height - 200.0)
+            .min_scrolled_height(200.0)
+            .auto_shrink([false; 2])
+            .stick_to_bottom(self.scroll_to_bottom)
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                
+                if self.chat_history.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.label("No messages yet. Start a conversation!");
+                    });
+                }
+                
+                for message in &self.chat_history {
+                    let bg_color = if message.is_user {
+                        ui.style().visuals.extreme_bg_color
+                    } else {
+                        ui.style().visuals.code_bg_color
+                    };
+
+                    egui::Frame::none()
+                        .fill(bg_color)
+                        .outer_margin(egui::vec2(8.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&message.timestamp)
+                                        .small()
+                                        .color(egui::Color32::GRAY));
+                                });
+                                
+                                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut message.content.as_str())
+                                            .desired_width(ui.available_width() - 16.0)
+                                            .interactive(false)
+                                            .frame(false)
+                                    );
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
+                }
+            });
+    }
+
+    fn render_input_area(&mut self, ui: &mut egui::Ui, code_editor: &mut super::code_editor::CodeEditor) {
+        ui.horizontal(|ui| {
+            let text_edit = ui.add_sized(
+                [ui.available_width() - 160.0, 80.0],
+                egui::TextEdit::multiline(&mut self.input_text)
+                    .hint_text("Ask about your code or request changes...")
+                    .desired_rows(3)
+            );
+        
+            ui.horizontal(|ui| {
+        
+                let last_response = self.last_ai_response.clone().unwrap_or_default();
+                let has_code_block = extract_code_block(&last_response).trim().len() > 0;
+
+                let send_button = ui.add_sized(
+                    [70.0, 40.0],
+                    egui::Button::new(
+                        egui::RichText::new(if self.is_loading { "⌛" } else { "Send" })
+                            .size(16.0)
+                    )
+                );
+
+                if has_code_block {
+                    ui.vertical(|ui| {
+                        let apply_button = ui.add_sized(
+                            [70.0, 40.0],
+                            egui::Button::new(
+                                egui::RichText::new("Apply Code")
+                                    .size(16.0)
+                            )
+                        );
+
+                        if apply_button.clicked() {
+                            if let Some(active_buffer) = code_editor.get_active_buffer_mut() {
+                                let code_block = extract_code_block(&last_response);
+                                if !code_block.is_empty() {
+                                    active_buffer.content = code_block.trim().to_string();
+                                    active_buffer.is_modified = true;
+                                    self.last_ai_response = None;
+                                }
+                            }
+                        }
+                    });
+                }
+
+                if (text_edit.lost_focus() && 
+                    ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) || 
+                    send_button.clicked()) && 
+                    !self.input_text.trim().is_empty() && 
+                    !self.is_loading 
+                {
+                    let question = std::mem::take(&mut self.input_text);
+                    self.add_message(question.clone(), true);
+                    self.is_loading = true;
+                    
+                    let file_content = code_editor.get_active_content();
+                    let messages = self.format_chat_messages(&file_content, &question);
+                    
+                    let tx = self.tx.clone();
+                    let api_key = self.api_key.clone();
+                    let client = self.http_client.clone();
+                    let model = self.model.clone();
+
+                    self.runtime.spawn(async move {
+                        let request = ChatRequest {
+                            model,
+                            messages,
+                        };
+                    
+                        println!("Sending request to Together AI: {:?}", request);
+                    
+                        let api_response = Self::make_api_request(&client, &api_key, &request).await;
+                        
+                        match api_response {
+                            Ok(text) => {
+                                match serde_json::from_str::<ChatResponse>(&text) {
+                                    Ok(response) => {
+                                        if let Some(choice) = response.choices.first() {
+                                            let _ = tx.send(choice.message.content.trim().to_string()).await;
+                                        } else {
+                                            let _ = tx.send("No response generated".to_string()).await;
+                                        }
+                                    },
+                                    Err(e) => {
+                                        let _ = tx.send(format!(
+                                            "Error parsing response: {}. Raw response: {}", 
+                                            e, 
+                                            text
+                                        )).await;
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                let _ = tx.send(format!("Request failed: {}", e)).await;
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, code_editor: &mut super::code_editor::CodeEditor) {
         let available_height = ui.available_height();
         self.panel_height = available_height;
@@ -235,11 +384,9 @@ impl AIAssistant {
             .fill(ui.style().visuals.window_fill())
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    // Header
                     ui.heading("AI Assistant");
                     ui.add_space(8.0);
                     
-                    // Debug section
                     egui::CollapsingHeader::new("Debug Info")
                         .default_open(false)
                         .show(ui, |ui| {
@@ -263,165 +410,11 @@ impl AIAssistant {
     
                     ui.add_space(8.0);
     
-                    // Chat area
-                    let chat_height = self.panel_height - 200.0;
-                    egui::Frame::none()
-                        .fill(ui.style().visuals.extreme_bg_color)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(chat_height)
-                                .min_scrolled_height(200.0)
-                                .auto_shrink([false; 2])
-                                .stick_to_bottom(self.scroll_to_bottom)
-                                .show(ui, |ui| {
-                                    ui.add_space(8.0);
-                                    
-                                    if self.chat_history.is_empty() {
-                                        ui.vertical_centered(|ui| {
-                                            ui.label("No messages yet. Start a conversation!");
-                                        });
-                                    }
-                                    
-                                    for message in &self.chat_history {
-                                        let bg_color = if message.is_user {
-                                            ui.style().visuals.extreme_bg_color
-                                        } else {
-                                            ui.style().visuals.code_bg_color
-                                        };
-    
-                                        egui::Frame::none()
-                                            .fill(bg_color)
-                                            .outer_margin(egui::vec2(8.0, 4.0))
-                                            .show(ui, |ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(egui::RichText::new(&message.timestamp)
-                                                            .small()
-                                                            .color(egui::Color32::GRAY));
-                                                    });
-                                                    
-                                                    // Using correct enum value Align::LEFT
-                                                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                                        ui.add(
-                                                            egui::TextEdit::multiline(&mut message.content.as_str())
-                                                                .desired_width(ui.available_width() - 16.0)
-                                                                .interactive(false)
-                                                                .frame(false)
-                                                        );
-                                                    });
-                                                });
-                                            });
-                                        ui.add_space(4.0);
-                                    }
-                                });
-                        });
+                    self.render_chat_history(ui);
     
                     ui.add_space(8.0);
     
-                    // Input area
-                    ui.horizontal(|ui| {
-                        let text_edit = ui.add_sized(
-                            [ui.available_width() - 160.0, 80.0],
-                            egui::TextEdit::multiline(&mut self.input_text)
-                                .hint_text("Ask about your code or request changes...")
-                                .desired_rows(3)
-                        );
-                    
-                        ui.horizontal(|ui| {
-                    
-                            let last_response = self.last_ai_response.clone().unwrap_or_default();
-                            let has_code_block = extract_code_block(&last_response).trim().len() > 0;
-
-                            // "Send" button
-                            let send_button = ui.add_sized(
-                                [70.0, 40.0],
-                                egui::Button::new(
-                                    egui::RichText::new(if self.is_loading { "⌛" } else { "Send" })
-                                        .size(16.0)
-                                )
-                            );
-
-                            // Only show the "Apply Code" button if there's a code block
-                            if has_code_block {
-                                ui.vertical(|ui| {
-
-                                    // "Apply Code" button
-                                    let apply_button = ui.add_sized(
-                                        [70.0, 40.0],
-                                        egui::Button::new(
-                                            egui::RichText::new("Apply Code")
-                                                .size(16.0)
-                                        )
-                                    );
-
-                                    if apply_button.clicked() {
-                                        if let Some(active_buffer) = code_editor.get_active_buffer_mut() {
-                                            let code_block = extract_code_block(&last_response);
-                                            if !code_block.is_empty() {
-                                                active_buffer.content = code_block.trim().to_string();
-                                                active_buffer.is_modified = true;
-                                                self.last_ai_response = None;
-                                            }
-                                        }
-                                    }
-                                });
-                            }
-
-                            if (text_edit.lost_focus() && 
-                                ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) || 
-                                send_button.clicked()) && 
-                                !self.input_text.trim().is_empty() && 
-                                !self.is_loading 
-                            {
-                                let question = std::mem::take(&mut self.input_text);
-                                self.add_message(question.clone(), true);
-                                self.is_loading = true;
-                                
-                                let file_content = code_editor.get_active_content();
-                                let messages = self.format_chat_messages(&file_content, &question);
-                                
-                                let tx = self.tx.clone();
-                                let api_key = self.api_key.clone();
-                                let client = self.http_client.clone();
-                                let model = self.model.clone(); // Use the selected model
-
-                                self.runtime.spawn(async move {
-                                    let request = ChatRequest {
-                                        model,
-                                        messages,
-                                    };
-                                
-                                    println!("Sending request to Together AI: {:?}", request);
-                                
-                                    let api_response = Self::make_api_request(&client, &api_key, &request).await;
-                                    
-                                    match api_response {
-                                        Ok(text) => {
-                                            match serde_json::from_str::<ChatResponse>(&text) {
-                                                Ok(response) => {
-                                                    if let Some(choice) = response.choices.first() {
-                                                        let _ = tx.send(choice.message.content.trim().to_string()).await;
-                                                    } else {
-                                                        let _ = tx.send("No response generated".to_string()).await;
-                                                    }
-                                                },
-                                                Err(e) => {
-                                                    let _ = tx.send(format!(
-                                                        "Error parsing response: {}. Raw response: {}", 
-                                                        e, 
-                                                        text
-                                                    )).await;
-                                                }
-                                            }
-                                        },
-                                        Err(e) => {
-                                            let _ = tx.send(format!("Request failed: {}", e)).await;
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    });
+                    self.render_input_area(ui, code_editor);
     
                     while let Ok(response) = self.rx.try_recv() {
                         if response.starts_with("Error") || 
@@ -431,7 +424,6 @@ impl AIAssistant {
                             self.add_debug_message(response.clone());
                         }
                         
-                        // Store the last AI response for potential code application
                         self.last_ai_response = Some(response.clone());
                         
                         self.add_message(response.clone(), false);
@@ -443,11 +435,10 @@ impl AIAssistant {
 }
 
 fn extract_code_block(text: &str) -> String {
-    // First, try to extract markdown code block
     let markdown_block_pattern: Vec<&str> = text
         .lines()
         .skip_while(|line| !line.starts_with("```"))
-        .skip(1)  // Skip the opening ```
+        .skip(1)
         .take_while(|line| !line.starts_with("```"))
         .collect();
 
@@ -455,11 +446,9 @@ fn extract_code_block(text: &str) -> String {
         return markdown_block_pattern.join("\n");
     }
 
-    // If no markdown block, try to extract the entire code portion
     let code_lines: Vec<&str> = text
         .lines()
         .filter(|line| 
-            // Basic heuristics to identify code-like lines
             line.contains("class ") || 
             line.contains("fun ") || 
             line.contains("import ") || 
