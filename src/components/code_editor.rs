@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
+use lru::LruCache;
+use std::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CursorPosition {
@@ -15,9 +17,22 @@ pub struct CursorPosition {
     pub column: usize,
 }
 
-#[derive(Default)]
 struct HighlightCache {
-    jobs: std::collections::HashMap<(String, String), egui::text::LayoutJob>,
+    jobs: LruCache<(String, String), egui::text::LayoutJob>,
+}
+
+impl Default for HighlightCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HighlightCache {
+    fn new() -> Self {
+        Self {
+            jobs: LruCache::new(NonZeroUsize::new(100).unwrap()),
+        }
+    }
 }
 
 fn determine_syntax_from_path(path: &Path, syntax_set: &SyntaxSet) -> String {
@@ -94,7 +109,7 @@ impl CodeEditor {
             theme_set: Arc::new(ThemeSet::load_defaults()),
             search_selected_line: None,
             logo_texture: None,
-            highlight_cache: HighlightCache::default(),
+            highlight_cache: HighlightCache::new(),
         }
     }
 
@@ -107,7 +122,6 @@ impl CodeEditor {
     }
 
     pub fn open_file(&mut self, content: String, file_path: String) -> usize {
-        // Check if the file is already open
         if let Some(index) = self.buffers.iter().position(|b| b.file_path.as_ref() == Some(&file_path)) {
             self.active_buffer_index = Some(index);
             return index;
@@ -121,31 +135,30 @@ impl CodeEditor {
         index
     }
 
-    pub fn load_logo(&mut self, ctx: &egui::Context) {
+    pub fn load_logo(&mut self, ctx: &egui::Context) -> Result<(), image::ImageError> {
         if self.logo_texture.is_none() {
             let logo_path = PathBuf::from("src/resources/blacksquare.png");
-            if let Ok(img) = image::open(&logo_path) {
-                let dimensions = img.dimensions(); // Now works with GenericImageView trait
-                let rgba = img.into_rgba8();
-                let pixels = rgba.as_flat_samples();
-                let image = egui::ColorImage::from_rgba_unmultiplied(
-                    [dimensions.0 as _, dimensions.1 as _],
-                    pixels.as_slice(),
-                );
-                self.logo_texture = Some(ctx.load_texture(
-                    "logo",
-                    image,
-                    egui::TextureOptions::default(),
-                ));
-            }
+            let img = image::open(&logo_path)?;
+            let dimensions = img.dimensions();
+            let rgba = img.into_rgba8();
+            let pixels = rgba.as_flat_samples();
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [dimensions.0 as _, dimensions.1 as _],
+                pixels.as_slice(),
+            );
+            self.logo_texture = Some(ctx.load_texture(
+                "logo",
+                image,
+                egui::TextureOptions::default(),
+            ));
         }
+        Ok(())
     }
 
     pub fn close_buffer(&mut self, index: usize) {
         if index < self.buffers.len() {
             self.buffers.remove(index);
             
-            // Update active buffer index
             if let Some(active_index) = self.active_buffer_index {
                 if active_index == index {
                     self.active_buffer_index = if self.buffers.is_empty() {
@@ -165,160 +178,159 @@ impl CodeEditor {
         let mut buffer_to_close = None;
 
         ui.vertical(|ui| {
-            // Header section with tabs
-            ui.horizontal_wrapped(|ui| {
-                for (index, buffer) in self.buffers.iter().enumerate() {
-                    let is_active = Some(index) == self.active_buffer_index;
-                    let file_name = buffer.file_path
-                        .as_ref()
-                        .and_then(|p| std::path::Path::new(p).file_name())
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("untitled");
-            
-                    ui.horizontal(|ui| {
-                        let mut text = egui::RichText::new(file_name);
-                        if buffer.is_modified {
-                            text = text.italics();
-                        }
-                        if is_active {
-                            text = text.strong();
-                        }
-            
-                        if ui.selectable_label(is_active, text).clicked() {
-                            self.active_buffer_index = Some(index);
-                        }
-            
-                        if ui.small_button("×").clicked() {
-                            buffer_to_close = Some(index);
-                        }
-                    });
-                }
-            });
+            self.show_tabs(ui, &mut buffer_to_close);
 
             if self.buffers.is_empty() {
-                // Create a container that takes up all available space
-                let available_rect = ui.available_rect_before_wrap();
-                
-                // Create a frame that centers content both horizontally and vertically
-                egui::Frame::none()
-                    .fill(ui.style().visuals.window_fill)
-                    .show(ui, |ui| {
-                        // Calculate the total content height
-                        let logo_height = 128.0;
-                        let heading_height = 30.0;
-                        let shortcuts_height = 7.0 * 20.0; // 7 lines * 20px per line
-                        let spacing = 20.0 * 3.0; // 3 spaces between elements
-                        let total_content_height = logo_height + heading_height + shortcuts_height + spacing;
-                        
-                        // Calculate vertical position to center the content
-                        let vertical_margin = (available_height - total_content_height) / 2.0;
-                        
-                        // Create centered layout
-                        ui.allocate_ui_with_layout(
-                            available_rect.size(),
-                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                            |ui| {
-                                // Add top margin to center content
-                                ui.add_space(vertical_margin.max(0.0));
-                                
-                                ui.vertical_centered(|ui| {
-                                    if let Some(logo) = &self.logo_texture {
-                                        ui.image(logo);
-                                        ui.add_space(20.0);
-                                    }
-                                    
-                                    ui.heading("Welcome to ZZZ IDE");
-                                    ui.add_space(20.0);
-                                    
-                                    ui.label("Shortcuts:");
-                                    ui.label("Ctrl+O: Open folder");
-                                    ui.label("Ctrl+P: Search files");
-                                    ui.label("Ctrl+F: Find in current file");
-                                    ui.label("Ctrl+Shift+F: Find in project");
-                                    ui.label("Ctrl+M: Open settings");
-                                    ui.label("Ctrl+S: Save current file");
-                                    ui.add_space(20.0);
-                                    
-                                    ui.label("Start by opening a folder or creating a new file");
-                                });
-                                
-                                // Add bottom margin to complete centering
-                                ui.add_space(vertical_margin.max(0.0));
-                            },
-                        );
-                    });
+                self.show_welcome_screen(ui, available_height);
             } else {
-                if let Some(active_index) = self.active_buffer_index {
-                    if let Some(buffer) = self.buffers.get_mut(active_index) {
-                        // Syntax selector
-                        egui::ComboBox::from_label("Syntax")
-                            .selected_text(&buffer.syntax)
-                            .show_ui(ui, |ui| {
-                                for syntax in self.syntax_set.syntaxes() {
-                                    ui.selectable_value(&mut buffer.syntax, syntax.name.clone(), &syntax.name);
-                                }
-                            });
-
-                        // Calculate remaining height for the editor
-                        let header_height = ui.min_rect().height();
-                        let editor_height = available_height - header_height;
-                        let search_highlight = self.search_highlight_text.clone();
-                        let selected_line = self.search_selected_line;
-
-                        // Code editing area with syntax highlighting
-                        egui::ScrollArea::vertical()
-                            .id_source(format!("buffer_{}_scroll_area", active_index))
-                            .auto_shrink([false; 2])
-                            .max_height(editor_height)
-                            .show_viewport(ui, |ui, viewport| {
-                                let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
-                                    let mut layout_job = highlight_syntax(
-                                        string,
-                                        &self.syntax_set,
-                                        &self.theme_set,
-                                        &buffer.syntax,
-                                        search_highlight.as_deref(),
-                                        selected_line,
-                                        &mut self.highlight_cache,  // Pass the cache
-                                    );
-                                    layout_job.wrap.max_width = wrap_width;
-                                    ui.fonts(|f| f.layout_job(layout_job))
-                                };
-
-                                if viewport.intersects(ui.max_rect()) {
-                                    if ui.add_sized(
-                                        [ui.available_width(), editor_height],
-                                        egui::TextEdit::multiline(&mut buffer.content)
-                                            .desired_width(f32::INFINITY)
-                                            .font(egui::TextStyle::Monospace)
-                                            .layouter(&mut layouter)
-                                    ).changed() {
-                                        buffer.is_modified = true;
-                                    }
-                                }
-                            });
-                    }
-                }
+                self.show_active_buffer(ui, available_height);
             }
         });
 
         if let Some(index) = buffer_to_close {
             self.close_buffer(index);
         }
+    }
+
+    fn show_tabs(&mut self, ui: &mut egui::Ui, buffer_to_close: &mut Option<usize>) {
+        ui.horizontal_wrapped(|ui| {
+            for (index, buffer) in self.buffers.iter().enumerate() {
+                let is_active = Some(index) == self.active_buffer_index;
+                let file_name = buffer.file_path
+                    .as_ref()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("untitled");
         
+                ui.horizontal(|ui| {
+                    let mut text = egui::RichText::new(file_name);
+                    if buffer.is_modified {
+                        text = text.italics();
+                    }
+                    if is_active {
+                        text = text.strong();
+                    }
+        
+                    if ui.selectable_label(is_active, text).clicked() {
+                        self.active_buffer_index = Some(index);
+                    }
+        
+                    if ui.small_button("×").clicked() {
+                        *buffer_to_close = Some(index);
+                    }
+                });
+            }
+        });
+    }
+
+    fn show_welcome_screen(&self, ui: &mut egui::Ui, available_height: f32) {
+        let available_rect = ui.available_rect_before_wrap();
+        
+        egui::Frame::none()
+            .fill(ui.style().visuals.window_fill)
+            .show(ui, |ui| {
+                let logo_height = 128.0;
+                let heading_height = 30.0;
+                let shortcuts_height = 7.0 * 20.0;
+                let spacing = 20.0 * 3.0;
+                let total_content_height = logo_height + heading_height + shortcuts_height + spacing;
+                
+                let vertical_margin = (available_height - total_content_height) / 2.0;
+                
+                ui.allocate_ui_with_layout(
+                    available_rect.size(),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.add_space(vertical_margin.max(0.0));
+                        
+                        ui.vertical_centered(|ui| {
+                            if let Some(logo) = &self.logo_texture {
+                                ui.image(logo);
+                                ui.add_space(20.0);
+                            }
+                            
+                            ui.heading("Welcome to ZZZ IDE");
+                            ui.add_space(20.0);
+                            
+                            ui.label("Shortcuts:");
+                            ui.label("Ctrl+O: Open folder");
+                            ui.label("Ctrl+P: Search files");
+                            ui.label("Ctrl+F: Find in current file");
+                            ui.label("Ctrl+Shift+F: Find in project");
+                            ui.label("Ctrl+M: Open settings");
+                            ui.label("Ctrl+S: Save current file");
+                            ui.add_space(20.0);
+                            
+                            ui.label("Start by opening a folder or creating a new file");
+                        });
+                        
+                        ui.add_space(vertical_margin.max(0.0));
+                    },
+                );
+            });
+    }
+
+    fn show_active_buffer(&mut self, ui: &mut egui::Ui, available_height: f32) {
+        if let Some(active_index) = self.active_buffer_index {
+            if let Some(buffer) = self.buffers.get_mut(active_index) {
+                let syntax = buffer.syntax.clone();
+                
+                // Syntax selector
+                let syntax_set = &self.syntax_set;
+                egui::ComboBox::from_label("Syntax")
+                    .selected_text(&syntax)
+                    .show_ui(ui, |ui| {
+                        for syntax_def in syntax_set.syntaxes() {
+                            ui.selectable_value(&mut buffer.syntax, syntax_def.name.clone(), &syntax_def.name);
+                        }
+                    });
+    
+                let header_height = ui.min_rect().height();
+                let editor_height = available_height - header_height;
+                let search_highlight = self.search_highlight_text.clone();
+                let selected_line = self.search_selected_line;
+    
+                // Create a persistent ScrollArea
+                egui::ScrollArea::vertical()
+                    .id_source(format!("buffer_{}_scroll_area", active_index))
+                    .auto_shrink([false; 2])
+                    .max_height(editor_height)
+                    .show(ui, |ui| {  // Changed from show_viewport to show
+                        let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                            let mut layout_job = highlight_syntax(
+                                string,
+                                &self.syntax_set,
+                                &self.theme_set,
+                                &buffer.syntax,
+                                search_highlight.as_deref(),
+                                selected_line,
+                                &mut self.highlight_cache,
+                            );
+                            layout_job.wrap.max_width = wrap_width;
+                            ui.fonts(|f| f.layout_job(layout_job))
+                        };
+
+                        // Remove the viewport intersection check
+                        if ui.add_sized(
+                            [ui.available_width(), ui.available_height()],  // Use available_height instead of fixed editor_height
+                            egui::TextEdit::multiline(&mut buffer.content)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .layouter(&mut layouter)
+                        ).changed() {
+                            buffer.is_modified = true;
+                        }
+                    });
+            }
+        }
     }
 
     pub fn search(&mut self, search_term: &str, selected_line_number: Option<usize>) {
-        // Set the search highlight text and expiration time
         self.search_highlight_text = Some(search_term.to_string());
         self.search_highlight_expires_at = Some(Instant::now() + Duration::from_secs_f64(0.5));
-
-        // Store the selected line number for precise highlighting
         self.search_selected_line = selected_line_number;
 
-        // If an active buffer exists, find and set cursor to first occurrence
         if let Some(buffer) = self.get_active_buffer_mut() {
-            // Set cursor position to first occurrence
             if let Some(position) = buffer.content.find(search_term) {
                 let (line, column) = calculate_line_column(&buffer.content, position);
                 buffer.set_cursor_position(line, column);
@@ -327,10 +339,8 @@ impl CodeEditor {
     }
 
     pub fn clear_expired_highlights(&mut self) {
-        // Check if highlights have expired
         if let Some(expires_at) = self.search_highlight_expires_at {
             if Instant::now() >= expires_at {
-                // Reset highlight tracking
                 self.search_highlight_text = None;
                 self.search_highlight_expires_at = None;
             }
@@ -374,19 +384,16 @@ fn highlight_syntax(
     }
 
     for (line_index, line) in LinesWithEndings::from(code).enumerate() {
-        // Check if this line should be highlighted
         let should_highlight = selected_line.map_or(false, |sel| line_index + 1 == sel);
 
         if let Some(highlight_text) = search_highlight {
             if should_highlight && line.contains(highlight_text) {
                 let parts: Vec<&str> = line.split(highlight_text).collect();
                 for (i, part) in parts.iter().enumerate() {
-                    // Add the non-highlight part
                     for (style, text) in highlighter.highlight_line(part, syntax_set).unwrap() {
                         job.append(text, 0.0, style_to_text_format(style));
                     }
                     
-                    // Add the highlight part if not the last segment
                     if i < parts.len() - 1 {
                         let highlight_format = egui::TextFormat {
                             background: egui::Color32::from_rgba_unmultiplied(255, 255, 0, 100),
@@ -396,20 +403,18 @@ fn highlight_syntax(
                     }
                 }
             } else {
-                // Normal syntax highlighting
                 for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
                     job.append(text, 0.0, style_to_text_format(style));
                 }
             }
         } else {
-            // Normal syntax highlighting if no search highlight
             for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
                 job.append(text, 0.0, style_to_text_format(style));
             }
         }
     }
 
-    cache.jobs.insert(cache_key, job.clone());
+    cache.jobs.put(cache_key, job.clone());
     job
 }
 

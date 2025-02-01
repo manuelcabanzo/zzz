@@ -62,7 +62,9 @@ impl IDE {
         let emulator_panel = EmulatorPanel::new();
         
         let mut code_editor = CodeEditor::new();
-        code_editor.load_logo(&cc.egui_ctx);
+        if let Err(err) = code_editor.load_logo(&cc.egui_ctx) {
+            eprintln!("Failed to load logo: {}", err);
+        }
         
         // Create IDE instance with state-derived values
         let mut ide = Self {
