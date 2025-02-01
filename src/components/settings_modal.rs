@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-
 use eframe::egui;
 use crate::{core::git_manager::{GitCommit, GitManager}, utils::themes::{custom_theme, Theme}};
 
@@ -76,16 +75,14 @@ impl SettingsModal {
     pub fn update_git_manager(&mut self, project_path: Option<PathBuf>) {
         self.commits.clear();
         self.git_manager = None;
-
         if let Some(path) = project_path {
             println!("Updating git manager for path: {}", path.display()); // Add this
             let git_manager = GitManager::new(path.clone());
-            
+
             if !git_manager.is_git_repo() {
                 println!("Path is not a git repository: {}", path.display()); // Add this
                 return;
             }
-
             match git_manager.get_commits() {
                 Ok(commits) => {
                     println!("Found {} commits", commits.len()); // Add this
@@ -103,7 +100,6 @@ impl SettingsModal {
     fn show_git_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Git History");
         ui.add_space(10.0);
-
         if let Some(git_manager) = &self.git_manager {
             // Check if checkout is in progress
             if git_manager.is_checkout_in_progress() {
@@ -111,7 +107,6 @@ impl SettingsModal {
                 ui.label("Checkout in progress...");
                 return;
             }
-
             if self.commits.is_empty() {
                 match git_manager.get_commits() {
                     Ok(commits) => {
@@ -123,7 +118,6 @@ impl SettingsModal {
                     }
                 }
             }
-
             if self.commits.is_empty() {
                 ui.label("No commits found in repository.");
             } else {
@@ -134,7 +128,7 @@ impl SettingsModal {
                         for commit in &self.commits {
                             ui.add_space(5.0);
                             let is_selected = self.selected_commit.as_ref() == Some(&commit.hash);
-                            
+
                             egui::Frame::none()
                                 .fill(if is_selected {
                                     ui.style().visuals.selection.bg_fill
@@ -148,7 +142,7 @@ impl SettingsModal {
                                     });
                                     ui.label(format!("Author: {}", commit.author));
                                     ui.label(&commit.message);
-                                    
+
                                     if ui.button("Checkout").clicked() && !is_selected {
                                         if let Err(e) = git_manager.checkout_commit(&commit.hash) {
                                             println!("Checkout error: {}", e);
@@ -170,7 +164,6 @@ impl SettingsModal {
         if !self.show {
             return;
         }
-
         let modal_size = egui::vec2(500.0, 500.0);
         egui::Window::new("Settings")
             .fixed_size(modal_size)
@@ -188,7 +181,6 @@ impl SettingsModal {
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::Git, "Git");
                 });
-
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
@@ -200,16 +192,14 @@ impl SettingsModal {
     fn show_ai_settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("AI Assistant Settings");
         ui.add_space(10.0);
-        
+
         ui.horizontal(|ui| {
             ui.label("Together AI API Key:");
             if ui.text_edit_singleline(&mut self.api_key).changed() {
                 self.api_key_changed = true;
             }
         });
-
         ui.add_space(10.0);
-
         ui.horizontal(|ui| {
             ui.label("AI Model:");
             let models = vec![
@@ -235,7 +225,6 @@ impl SettingsModal {
                 self.ai_model_changed = true;
             }
         });
-
         if self.ai_model.is_empty() {
             ui.horizontal(|ui| {
                 ui.label("Custom Model:");
@@ -244,7 +233,6 @@ impl SettingsModal {
                 }
             });
         }
-
         ui.add_space(5.0);
         ui.label("Your API key and model are stored locally and used only for AI assistant functionality.");
     }
@@ -252,7 +240,6 @@ impl SettingsModal {
     fn show_personalization_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.heading("Personalization");
         ui.add_space(10.0);
-
         if ui.button("Cream Theme").clicked() {
             self.current_theme = Theme::cream();
             self.apply_theme(ctx);
@@ -267,20 +254,14 @@ impl SettingsModal {
         }
     }
 
-    // fn show_general_settings(&mut self, ui: &mut egui::Ui) {
-    //     ui.heading("General Settings");
-    //     ui.add_space(10.0);
-    //     ui.label("General settings will be added here in the future.");
-    // }
-
-    // fn show_editor_settings(&mut self, ui: &mut egui::Ui) {
-    //     ui.heading("Editor Settings");
-    //     ui.add_space(10.0);
-    //     ui.label("Editor settings will be added here in the future.");
-    // }
-
     pub fn apply_theme(&self, ctx: &egui::Context) {
         let visuals = custom_theme(ctx, &self.current_theme);
         ctx.set_visuals(visuals);
+    }
+
+    // Add a method to validate the API key and AI model
+    pub fn validate_settings(&self) -> bool {
+        // Example validation: API key should not be empty
+        !self.api_key.is_empty() && !self.ai_model.is_empty()
     }
 }

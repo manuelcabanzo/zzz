@@ -1,7 +1,7 @@
 use eframe::egui;
 use std::path::{PathBuf, Path};
-use std::rc::Rc;
 use std::collections::HashSet;
+use std::rc::Rc;
 use rfd::FileDialog;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::file_system::FileSystem;

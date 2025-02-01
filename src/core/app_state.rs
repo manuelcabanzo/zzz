@@ -1,19 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::rc::Rc;
 use directories::ProjectDirs;
 use std::fs;
 use crate::utils::themes::Theme;
 use crate::core::ide::IDE;
 use crate::components::code_editor::{Buffer, CursorPosition};
 use std::path::Path;
-use std::rc::Rc;
 use crate::core::file_system::FileSystem;
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppState {
     // File and editor state
-    #[serde(with = "path_buf_serde")]
+    #[serde(with = "serde_path_buf")]
     pub last_project_path: Option<PathBuf>,
     pub open_buffers: Vec<BufferState>,
     pub active_buffer_index: Option<usize>,
@@ -30,9 +29,9 @@ pub struct AppState {
     pub ai_model: String, // Add this field
 }
 
-// Custom serialization for PathBuf
-mod path_buf_serde {
-    use serde::{Deserialize, Deserializer, Serializer, Serialize};
+// Use serde_path_buf for PathBuf serialization/deserialization
+mod serde_path_buf {
+    use serde::{Deserialize, Deserializer, Serializer};
     use std::path::PathBuf;
 
     pub fn serialize<S>(path: &Option<PathBuf>, serializer: S) -> Result<S::Ok, S::Error>
@@ -40,7 +39,7 @@ mod path_buf_serde {
         S: Serializer,
     {
         match path {
-            Some(p) => p.to_str().unwrap_or("").serialize(serializer),
+            Some(p) => serializer.serialize_str(p.to_str().unwrap_or("")),
             None => serializer.serialize_none(),
         }
     }
@@ -91,7 +90,6 @@ impl AppState {
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(config_path) = Self::get_config_path() {
-            // Ensure the config directory exists
             if let Some(parent) = config_path.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -109,16 +107,14 @@ impl AppState {
     }
 
     pub fn update_from_ide(&mut self, ide: &IDE) {
-        // Existing state updates
         self.last_project_path = ide.file_modal.project_path.clone();
         self.console_panel_visible = ide.show_console_panel;
         self.emulator_panel_visible = ide.show_emulator_panel;
-        self.ai_assistant_panel_visible = ide.show_ai_panel;  // Add this line
+        self.ai_assistant_panel_visible = ide.show_ai_panel;
         self.current_theme = ide.settings_modal.current_theme.clone();
         self.ai_api_key = ide.settings_modal.get_api_key();
-        self.ai_model = ide.ai_model.clone(); // Add this line
+        self.ai_model = ide.ai_model.clone();
 
-        // Save buffer states
         self.open_buffers = ide.code_editor.buffers.iter().map(|buffer| {
             BufferState {
                 file_path: buffer.file_path.clone().unwrap_or_default(),
@@ -130,30 +126,23 @@ impl AppState {
     }
 
     pub fn apply_to_ide(&self, ide: &mut IDE) {
-        // First initialize the file system if we have a project path
         if let Some(project_path) = &self.last_project_path {
             if project_path.exists() {
                 let fs = Rc::new(FileSystem::new(project_path.to_str().unwrap()));
                 ide.file_modal.file_system = Some(fs);
                 ide.file_modal.project_path = Some(project_path.clone());
-                
-                // Expand the root folder
                 ide.file_modal.expanded_folders.insert(project_path.clone());
             }
         }
 
-        // Apply the rest of the saved state
         ide.show_console_panel = self.console_panel_visible;
         ide.show_emulator_panel = self.emulator_panel_visible;
-        ide.show_ai_panel = self.ai_assistant_panel_visible;  // Make sure this line is present
+        ide.show_ai_panel = self.ai_assistant_panel_visible;
         ide.settings_modal.current_theme = self.current_theme.clone();
         ide.settings_modal.set_api_key(self.ai_api_key.clone());
+        ide.ai_assistant.update_api_key(self.ai_api_key.clone());
+        ide.ai_model = self.ai_model.clone();
 
-        // Also update the AI Assistant's API key
-        ide.ai_assistant.update_api_key(self.ai_api_key.clone());  // Add this line
-        ide.ai_model = self.ai_model.clone(); // Add this line
-
-        // Restore buffers
         for buffer_state in &self.open_buffers {
             let path = Path::new(&buffer_state.file_path);
             if path.exists() {
@@ -169,11 +158,10 @@ impl AppState {
             }
         }
 
-        // Ensure no active buffer if there are no buffers
-        if ide.code_editor.buffers.is_empty() {
-            ide.code_editor.active_buffer_index = None;
+        ide.code_editor.active_buffer_index = if ide.code_editor.buffers.is_empty() {
+            None
         } else {
-            ide.code_editor.active_buffer_index = self.active_buffer_index;
-        }
+            self.active_buffer_index
+        };
     }
 }

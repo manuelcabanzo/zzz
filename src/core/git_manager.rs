@@ -19,91 +19,83 @@ pub struct GitManager {
 }
 
 impl GitManager {
+    const GIT_LOG_FORMAT: &'static str = "%H|||%an|||%ai|||%s";
+    const DATE_FORMAT_ISO: &'static str = "%Y-%m-%d %H:%M:%S %z";
+
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { 
+        Self {
             repo_path,
-            is_checking_out: Arc::new(AtomicBool::new(false))
+            is_checking_out: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    /// Checks if the current directory is a valid Git repository.
     pub fn is_git_repo(&self) -> bool {
-        // Enhanced logging version
         let git_dir = self.repo_path.join(".git");
         let direct_check = git_dir.exists() && git_dir.is_dir();
-        
-        println!("Checking git repo at: {}", self.repo_path.display()); // Add this
-        println!("Direct check: {}", direct_check); // Add this
+
+        println!("Checking git repo at: {}", self.repo_path.display());
+        println!("Direct check: {}", direct_check);
 
         if direct_check {
             return true;
         }
 
-        // Enhanced command execution logging
-        let output = Command::new("git")
-            .args(&["rev-parse", "--git-dir"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| {
-                println!("Git command execution error: {}", e); // Add this
-                e
-            });
-
-        match output {
+        match Self::run_git_command(&["rev-parse", "--git-dir"], &self.repo_path) {
             Ok(output) => {
-                println!("Git rev-parse output: {:?}", output); // Add this
+                println!("Git rev-parse output: {:?}", output);
                 output.status.success()
-            },
-            Err(_) => false
+            }
+            Err(e) => {
+                println!("Git command execution error: {}", e);
+                false
+            }
         }
     }
 
+    /// Initializes the Git repository if it exists.
     pub fn initialize(&self) -> Result<(), String> {
-        println!("Initializing git repo at: {}", self.repo_path.display()); // Add this
-        
-        let output = Command::new("git")
-            .args(&["status"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| {
-                println!("Git status command error: {}", e); // Add this
-                format!("Failed to execute git command: {}", e)
-            })?;
+        println!("Initializing git repo at: {}", self.repo_path.display());
 
-        println!("Git status output: {:?}", output); // Add this
-        
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("Git status failed: {}", stderr); // Add this
-            return Err(format!("Git status failed: {}", stderr));
+        match Self::run_git_command(&["status"], &self.repo_path) {
+            Ok(output) => {
+                println!("Git status output: {:?}", output);
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!("Git status failed: {}", stderr);
+                    return Err(format!("Git status failed: {}", stderr));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                println!("Git status command error: {}", e);
+                Err(format!("Failed to execute git command: {}", e))
+            }
         }
-
-        Ok(())
     }
 
+    /// Retrieves the list of commits from the Git repository.
     pub fn get_commits(&self) -> Result<Vec<GitCommit>, String> {
         if !self.is_git_repo() {
             return Err("Not a git repository".to_string());
         }
 
-        let output = Command::new("git")
-            .args(&[
+        let output = Self::run_git_command(
+            &[
                 "log",
-                "--pretty=format:%H|||%an|||%ai|||%s",
+                &format!("--pretty=format:{}", Self::GIT_LOG_FORMAT),
                 "--date=iso",
-                "--all"  // Add this to show commits from all branches
-            ])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| format!("Git command failed: {}", e))?;
+                "--all",
+            ],
+            &self.repo_path,
+        )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("Failed to get git history: {}", stderr));
         }
 
-        let output_str = String::from_utf8(output.stdout)
-            .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
-
+        let output_str = String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
         if output_str.is_empty() {
             return Ok(Vec::new());
         }
@@ -111,29 +103,13 @@ impl GitManager {
         let commits = output_str
             .lines()
             .filter(|line| !line.is_empty())
-            .map(|line| {
-                let parts: Vec<&str> = line.split("|||").collect();
-                if parts.len() != 4 {
-                    return Err(format!("Invalid commit line format: '{}'", line));
-                }
-
-                let date = DateTime::parse_from_rfc3339(parts[2])
-                    .or_else(|_| DateTime::parse_from_str(parts[2], "%Y-%m-%d %H:%M:%S %z"))
-                    .map_err(|e| format!("Failed to parse date '{}': {}", parts[2], e))?
-                    .with_timezone(&Local);
-
-                Ok(GitCommit {
-                    hash: parts[0].to_string(),
-                    author: parts[1].to_string(),
-                    date,
-                    message: parts[3].to_string(),
-                })
-            })
+            .map(|line| Self::parse_commit_line(line))
             .collect::<Result<Vec<_>, String>>()?;
 
         Ok(commits)
     }
-    
+
+    /// Checks out a specific commit by its hash.
     pub fn checkout_commit(&self, commit_hash: &str) -> Result<(), String> {
         // Prevent multiple concurrent checkouts
         if self.is_checking_out.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
@@ -145,45 +121,62 @@ impl GitManager {
         result
     }
 
+    /// Performs the actual checkout operation.
     fn perform_checkout(&self, commit_hash: &str) -> Result<(), String> {
-        // Reset any local changes
-        let reset_output = Command::new("git")
-            .args(&["reset", "--hard", "HEAD"])
-            .current_dir(&self.repo_path)
+        self.reset_and_clean()?;
+        self.force_checkout(commit_hash)
+    }
+
+    /// Resets the repository to HEAD and cleans untracked files.
+    fn reset_and_clean(&self) -> Result<(), String> {
+        self.run_git_command_with_check(&["reset", "--hard", "HEAD"], "Failed to reset changes")?;
+        self.run_git_command_with_check(&["clean", "-fd"], "Failed to clean repository")
+    }
+
+    /// Forces a checkout to the specified commit.
+    fn force_checkout(&self, commit_hash: &str) -> Result<(), String> {
+        self.run_git_command_with_check(&["checkout", "--force", commit_hash], "Checkout failed")
+    }
+
+    /// Checks if a checkout operation is currently in progress.
+    pub fn is_checkout_in_progress(&self) -> bool {
+        self.is_checking_out.load(Ordering::SeqCst)
+    }
+
+    // Helper methods
+
+    fn run_git_command(args: &[&str], repo_path: &PathBuf) -> Result<std::process::Output, String> {
+        Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
             .output()
-            .map_err(|e| format!("Failed to reset: {}", e))?;
-    
-        if !reset_output.status.success() {
-            return Err("Failed to reset changes".to_string());
+            .map_err(|e| format!("Failed to execute git command: {}", e))
+    }
+
+    fn run_git_command_with_check(&self, args: &[&str], error_message: &str) -> Result<(), String> {
+        let output = Self::run_git_command(args, &self.repo_path)?;
+        if !output.status.success() {
+            return Err(format!("{}: {}", error_message, String::from_utf8_lossy(&output.stderr)));
         }
-    
-        // Clean untracked files
-        let clean_output = Command::new("git")
-            .args(&["clean", "-fd"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| format!("Failed to clean: {}", e))?;
-    
-        if !clean_output.status.success() {
-            return Err("Failed to clean repository".to_string());
-        }
-    
-        // Checkout with force
-        let checkout_output = Command::new("git")
-            .args(&["checkout", "--force", commit_hash])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| format!("Failed to checkout: {}", e))?;
-    
-        if !checkout_output.status.success() {
-            return Err(format!("Checkout failed: {}", 
-                String::from_utf8_lossy(&checkout_output.stderr)));
-        }
-    
         Ok(())
     }
 
-    pub fn is_checkout_in_progress(&self) -> bool {
-        self.is_checking_out.load(Ordering::SeqCst)
+    fn parse_commit_line(line: &str) -> Result<GitCommit, String> {
+        let parts: Vec<&str> = line.split("|||").collect();
+        if parts.len() != 4 {
+            return Err(format!("Invalid commit line format: '{}'", line));
+        }
+
+        let date = DateTime::parse_from_rfc3339(parts[2])
+            .or_else(|_| DateTime::parse_from_str(parts[2], Self::DATE_FORMAT_ISO))
+            .map_err(|e| format!("Failed to parse date '{}': {}", parts[2], e))?
+            .with_timezone(&Local);
+
+        Ok(GitCommit {
+            hash: parts[0].to_string(),
+            author: parts[1].to_string(),
+            date,
+            message: parts[3].to_string(),
+        })
     }
 }

@@ -27,6 +27,9 @@ struct FileSystemCache {
 }
 
 impl FileSystem {
+    const CACHE_TIMEOUT_SECS: u64 = 300; // 5 minutes
+    const MAX_FILE_SIZE_BYTES: u64 = 10_000_000; // 10 MB
+
     /// Creates a new `FileSystem` instance with the given project directory.
     pub fn new(project_directory: &str) -> Self {
         Self {
@@ -38,48 +41,40 @@ impl FileSystem {
     /// Creates a new file with the specified filename in the given directory.
     pub fn create_new_file(&self, directory: &Path, filename: &str) -> io::Result<PathBuf> {
         let path = directory.join(filename);
-        
+
         // Ensure the directory exists
-        fs::create_dir_all(directory)?;
-        
+        self.ensure_directory_exists(directory)?;
+
         // Create the file
         fs::File::create(&path)?;
-        
+
         // Invalidate cache for the parent directory
         self.invalidate_directory_cache(directory);
-        
+
         Ok(path)
     }
 
     /// Opens a file and returns its content as a `String`.
     pub fn open_file(&self, path: &Path) -> io::Result<String> {
         // Check cache first
-        {
-            let cache = self.cache.lock().unwrap();
-            if let Some((content, cached_time)) = cache.file_contents.get(path) {
-                // Check if cache is fresh (within 5 minutes)
-                if SystemTime::now().duration_since(*cached_time).unwrap_or(Duration::from_secs(0)) < Duration::from_secs(300) {
-                    return Ok(content.clone());
-                }
-            }
+        if let Some(content) = self.get_cached_file_content(path)? {
+            return Ok(content);
         }
 
-        // Added metadata check for large file prevention
+        // Check file size before reading
         let metadata = fs::metadata(path)?;
-        if metadata.len() > 10_000_000 { // 10 MB limit
+        if metadata.len() > Self::MAX_FILE_SIZE_BYTES {
             return Err(io::Error::new(
-                ErrorKind::Other, 
-                "File too large to open"
+                ErrorKind::Other,
+                format!("File too large to open ({} bytes)", metadata.len()),
             ));
         }
-        
+
+        // Read file content
         let content = fs::read_to_string(path)?;
 
         // Cache the file content
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.file_contents.insert(path.to_path_buf(), (content.clone(), SystemTime::now()));
-        }
+        self.cache_file_content(path, &content);
 
         Ok(content)
     }
@@ -87,52 +82,29 @@ impl FileSystem {
     /// Saves the given content to a file with the specified path.
     pub fn save_file(&self, path: &Path, content: &str) -> io::Result<()> {
         // Ensure the parent directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        
+        self.ensure_directory_exists(path.parent().unwrap_or(path))?;
+
+        // Write content to file
         fs::write(path, content)?;
-        
+
         // Update cache
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.file_contents.insert(path.to_path_buf(), (content.to_string(), SystemTime::now()));
-        }
-        
+        self.cache_file_content(path, content);
+
         // Invalidate directory cache for the parent directory
         self.invalidate_directory_cache(path.parent().unwrap_or(path));
-        
+
         Ok(())
     }
 
     /// Lists the entries in the specified directory with caching.
     pub fn list_directory(&self, dir: &Path) -> io::Result<Vec<DirectoryEntry>> {
         // Check cache first
-        {
-            let cache = self.cache.lock().unwrap();
-            if let Some(cached_entries) = self.get_cached_directory_entries(&cache, dir) {
-                return Ok(cached_entries);
-            }
+        if let Some(entries) = self.get_cached_directory_entries(dir)? {
+            return Ok(entries);
         }
 
         // If not in cache, read from file system
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            
-            // Get file metadata
-            let metadata = entry.metadata()?;
-            
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                entries.push(DirectoryEntry {
-                    name: name.to_string(),
-                    is_dir: metadata.is_dir(),
-                    size: metadata.len(),
-                    modified: metadata.modified().unwrap_or(UNIX_EPOCH),
-                });
-            }
-        }
+        let mut entries = self.read_directory_entries(dir)?;
 
         // Sort entries (directories first, then alphabetically)
         entries.sort_by(|a, b| {
@@ -152,28 +124,17 @@ impl FileSystem {
     /// Renames a file or directory from `old_path` to `new_path`.
     pub fn rename_file(&self, old_path: &Path, new_path: &Path) -> io::Result<()> {
         // Ensure parent directories exist
-        if let Some(new_parent) = new_path.parent() {
-            fs::create_dir_all(new_parent)?;
-        }
+        self.ensure_directory_exists(new_path.parent().unwrap_or(new_path))?;
 
         // Rename the file/directory
         fs::rename(old_path, new_path)?;
 
         // Invalidate caches for both old and new parent directories
-        if let Some(old_parent) = old_path.parent() {
-            self.invalidate_directory_cache(old_parent);
-        }
-        if let Some(new_parent) = new_path.parent() {
-            self.invalidate_directory_cache(new_parent);
-        }
+        self.invalidate_directory_cache(old_path.parent().unwrap_or(old_path));
+        self.invalidate_directory_cache(new_path.parent().unwrap_or(new_path));
 
         // Update file content cache if applicable
-        {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some((content, _)) = cache.file_contents.remove(old_path) {
-                cache.file_contents.insert(new_path.to_path_buf(), (content, SystemTime::now()));
-            }
-        }
+        self.update_file_content_cache(old_path, new_path);
 
         Ok(())
     }
@@ -182,7 +143,7 @@ impl FileSystem {
     pub fn delete_file(&self, path: &Path) -> io::Result<()> {
         // Determine if it's a directory or file
         let is_dir = path.is_dir();
-        
+
         // Delete the file or directory
         if is_dir {
             fs::remove_dir_all(path)?;
@@ -191,15 +152,10 @@ impl FileSystem {
         }
 
         // Invalidate cache for the parent directory
-        if let Some(parent) = path.parent() {
-            self.invalidate_directory_cache(parent);
-        }
+        self.invalidate_directory_cache(path.parent().unwrap_or(path));
 
         // Remove from file contents cache
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.file_contents.remove(path);
-        }
+        self.remove_file_content_cache(path);
 
         Ok(())
     }
@@ -208,12 +164,10 @@ impl FileSystem {
     pub fn create_directory(&self, path: &Path) -> io::Result<()> {
         // Create directory and any necessary parent directories
         fs::create_dir_all(path)?;
-        
+
         // Invalidate cache for the parent directory
-        if let Some(parent) = path.parent() {
-            self.invalidate_directory_cache(parent);
-        }
-        
+        self.invalidate_directory_cache(path.parent().unwrap_or(path));
+
         Ok(())
     }
 
@@ -221,35 +175,90 @@ impl FileSystem {
     pub fn get_project_directory(&self) -> &Path {
         &self.project_directory
     }
-    
+
     /// Checks if a path exists.
     pub fn path_exists(&self, path: &Path) -> bool {
         path.exists()
     }
 
-    // Private method to get cached directory entries
-    fn get_cached_directory_entries(&self, cache: &FileSystemCache, dir: &Path) -> Option<Vec<DirectoryEntry>> {
-        // Check if cache exists and is recent (within 5 minutes)
-        cache.last_updated.get(dir).and_then(|last_updated| {
-            SystemTime::now().duration_since(*last_updated)
-                .map(|duration| duration.as_secs() < 300) // 5 minutes cache timeout
-                .unwrap_or(false)
-                .then(|| cache.directory_contents.get(dir).cloned())
-                .flatten()
-        })
+    // Helper methods
+
+    fn ensure_directory_exists(&self, directory: &Path) -> io::Result<()> {
+        if !directory.exists() {
+            fs::create_dir_all(directory)?;
+        }
+        Ok(())
     }
 
-    // Private method to cache directory entries
+    fn get_cached_file_content(&self, path: &Path) -> io::Result<Option<String>> {
+        let cache = self.cache.lock().unwrap();
+        if let Some((content, cached_time)) = cache.file_contents.get(path) {
+            if SystemTime::now().duration_since(*cached_time).unwrap_or(Duration::from_secs(0))
+                < Duration::from_secs(Self::CACHE_TIMEOUT_SECS)
+            {
+                return Ok(Some(content.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn cache_file_content(&self, path: &Path, content: &str) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.file_contents.insert(path.to_path_buf(), (content.to_string(), SystemTime::now()));
+    }
+
+    fn get_cached_directory_entries(&self, dir: &Path) -> io::Result<Option<Vec<DirectoryEntry>>> {
+        let cache = self.cache.lock().unwrap();
+        if let Some(last_updated) = cache.last_updated.get(dir) {
+            if SystemTime::now().duration_since(*last_updated).unwrap_or(Duration::from_secs(0))
+                < Duration::from_secs(Self::CACHE_TIMEOUT_SECS)
+            {
+                return Ok(cache.directory_contents.get(dir).cloned());
+            }
+        }
+        Ok(None)
+    }
+
     fn cache_directory_entries(&self, dir: &Path, entries: &[DirectoryEntry]) {
         let mut cache = self.cache.lock().unwrap();
         cache.directory_contents.insert(dir.to_path_buf(), entries.to_vec());
         cache.last_updated.insert(dir.to_path_buf(), SystemTime::now());
     }
 
-    // Private method to invalidate directory cache
     fn invalidate_directory_cache(&self, dir: &Path) {
         let mut cache = self.cache.lock().unwrap();
         cache.directory_contents.remove(dir);
         cache.last_updated.remove(dir);
+    }
+
+    fn update_file_content_cache(&self, old_path: &Path, new_path: &Path) {
+        let mut cache = self.cache.lock().unwrap();
+        if let Some((content, _)) = cache.file_contents.remove(old_path) {
+            cache.file_contents.insert(new_path.to_path_buf(), (content, SystemTime::now()));
+        }
+    }
+
+    fn remove_file_content_cache(&self, path: &Path) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.file_contents.remove(path);
+    }
+
+    fn read_directory_entries(&self, dir: &Path) -> io::Result<Vec<DirectoryEntry>> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = entry.metadata()?;
+
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                entries.push(DirectoryEntry {
+                    name: name.to_string(),
+                    is_dir: metadata.is_dir(),
+                    size: metadata.len(),
+                    modified: metadata.modified().unwrap_or(UNIX_EPOCH),
+                });
+            }
+        }
+        Ok(entries)
     }
 }

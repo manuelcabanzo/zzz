@@ -4,11 +4,16 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::{Arc, Mutex};
 use crossbeam_channel::{unbounded, Sender, Receiver};
 use eframe::egui::{self, Color32, text::LayoutJob};
-use std::sync::atomic::{AtomicBool, Ordering};
 use regex::Regex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style as SyntectStyle};
 use syntect::parsing::{SyntaxSet, SyntaxReference};
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref URL_REGEX: Regex = Regex::new(r"https?://\S+").unwrap();
+}
 
 #[derive(Clone)]
 struct TerminalLine {
@@ -30,14 +35,14 @@ enum LineStyle {
 pub struct Terminal {
     pub current_directory: Arc<Mutex<PathBuf>>,
     input: String,
-    output: Vec<TerminalLine>,
-    command_history: Vec<String>,
+    output: Arc<Mutex<Vec<TerminalLine>>>,
+    command_history: Arc<Mutex<Vec<String>>>,
     history_index: Option<usize>,
     child_process: Option<Child>,
     stdin_tx: Option<Sender<String>>,
     stdout_rx: Option<Receiver<String>>,
     running: Arc<AtomicBool>,
-    auto_complete_suggestions: Vec<String>,
+    auto_complete_suggestions: Arc<Mutex<Vec<String>>>,
     
     // Syntax highlighting resources
     syntax_set: SyntaxSet,
@@ -53,14 +58,14 @@ impl Terminal {
         let mut terminal = Self {
             current_directory: Arc::new(Mutex::new(initial_path.clone())),
             input: String::new(),
-            output: Vec::new(),
-            command_history: Vec::new(),
+            output: Arc::new(Mutex::new(Vec::new())),
+            command_history: Arc::new(Mutex::new(Vec::new())),
             history_index: None,
             child_process: None,
             stdin_tx: Some(stdin_tx),
             stdout_rx: Some(stdout_rx),
             running: Arc::clone(&running),
-            auto_complete_suggestions: Vec::new(),
+            auto_complete_suggestions: Arc::new(Mutex::new(Vec::new())),
             syntax_set: SyntaxSet::load_defaults_newlines(),
             theme_set: ThemeSet::load_defaults(),
         };
@@ -135,16 +140,12 @@ impl Terminal {
     }
 
     pub fn send_interrupt(&mut self) {
-        // Send interrupt signal to the current process
         if let Some(child) = &mut self.child_process {
-            // Use standard input to send interrupt
             if let Some(mut stdin) = child.stdin.take() {
-                // Send Ctrl+C equivalent
                 let _ = stdin.write_all(&[3]); // ASCII code for Ctrl+C
                 let _ = stdin.flush();
             }
 
-            // Attempt to send interrupt through system-level mechanisms
             #[cfg(unix)]
             {
                 use nix::sys::signal::{kill, Signal};
@@ -161,8 +162,7 @@ impl Terminal {
             }
         }
 
-        // Add interrupt log
-        self.output.push(TerminalLine {
+        self.output.lock().unwrap().push(TerminalLine {
             text: "Interrupt signal sent".to_string(),
             style: LineStyle::Warning
         });
@@ -171,54 +171,45 @@ impl Terminal {
     fn execute_command(&mut self) {
         if self.input.is_empty() { return; }
     
-        // Clone essential data to avoid borrowing conflicts
         let input = self.input.clone();
         let current_dir = self.current_directory.lock().unwrap().clone();
     
-        // Add to command history
-        self.command_history.push(input.clone());
+        self.command_history.lock().unwrap().push(input.clone());
         self.history_index = None;
     
-        // Parse input
         let parts: Vec<&str> = input.split_whitespace().collect();
     
-        // Handle specific commands
         match parts[0] {
             "cd" => {
                 if parts.len() > 1 {
-                    // Create a new path based on current directory
                     let new_path = if parts[1].starts_with('/') || parts[1].contains(':') {
-                        // Absolute path
                         PathBuf::from(parts[1])
                     } else {
-                        // Relative path
                         current_dir.join(parts[1])
                     };
     
                     match new_path.canonicalize() {
                         Ok(canonical_path) => {
-                            // Update current directory
                             *self.current_directory.lock().unwrap() = canonical_path.clone();
                             
-                            self.output.push(TerminalLine {
+                            self.output.lock().unwrap().push(TerminalLine {
                                 text: format!("Changed directory to: {}", canonical_path.display()),
                                 style: LineStyle::Success
                             });
     
-                            // Send cd command to shell to ensure shell's working directory is updated
                             if let Some(tx) = &self.stdin_tx {
                                 let _ = tx.send(format!("cd \"{}\"", canonical_path.display()));
                             }
                         }
                         Err(e) => {
-                            self.output.push(TerminalLine {
+                            self.output.lock().unwrap().push(TerminalLine {
                                 text: format!("Error changing directory: {}", e),
                                 style: LineStyle::Error
                             });
                         }
                     }
                 } else {
-                    self.output.push(TerminalLine {
+                    self.output.lock().unwrap().push(TerminalLine {
                         text: "Usage: cd <directory>".to_string(),
                         style: LineStyle::Warning
                     });
@@ -231,16 +222,14 @@ impl Terminal {
                 self.exit();
             }
             _ => {
-                // Add command to output
-                self.output.push(TerminalLine {
+                self.output.lock().unwrap().push(TerminalLine {
                     text: format!("$ {}", input),
                     style: LineStyle::Command
                 });
     
-                // Send command to shell
                 if let Some(tx) = &self.stdin_tx {
                     if tx.send(input.clone()).is_err() {
-                        self.output.push(TerminalLine {
+                        self.output.lock().unwrap().push(TerminalLine {
                             text: "Failed to send command to shell".to_string(),
                             style: LineStyle::Error
                         });
@@ -249,19 +238,15 @@ impl Terminal {
             }
         }
     
-        // Clear input and suggestions
         self.input.clear();
-        self.auto_complete_suggestions.clear();
+        self.auto_complete_suggestions.lock().unwrap().clear();
     }
 
     fn detect_links_and_highlight(&self, line: &str) -> LineStyle {
-        // URL Detection
-        let url_regex = Regex::new(r"https?://\S+").unwrap();
-        if let Some(mat) = url_regex.find(line) {
+        if let Some(mat) = URL_REGEX.find(line) {
             return LineStyle::Link(mat.as_str().to_string());
         }
 
-        // Syntax Highlighting for Common File Types
         let syntax = self.guess_syntax(line);
         if let Some(syntax) = syntax {
             let theme = &self.theme_set.themes["Solarized (dark)"];
@@ -291,22 +276,20 @@ impl Terminal {
     }
 
     fn clear(&mut self) {
-        self.output.clear();
-        self.output.push(TerminalLine {
+        self.output.lock().unwrap().clear();
+        self.output.lock().unwrap().push(TerminalLine {
             text: "Terminal cleared".to_string(),
             style: LineStyle::Success
         });
     }
     
     pub fn exit(&mut self) {
-        // Log start of exit process
-        self.output.push(TerminalLine {
+        self.output.lock().unwrap().push(TerminalLine {
             text: "Attempting to terminate shell process...".to_string(),
             style: LineStyle::Warning
         });
     
         if let Some(mut child) = self.child_process.take() {
-            // Stop the running flag to halt IO threads
             self.running.store(false, Ordering::SeqCst);
     
             let termination_result = match std::env::consts::OS {
@@ -342,35 +325,33 @@ impl Terminal {
                 }
             };
     
-            // Log termination result
-            self.output.push(TerminalLine {
+            self.output.lock().unwrap().push(TerminalLine {
                 text: termination_result,
                 style: LineStyle::Warning
             });
     
-            // Non-blocking wait with error handling
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    self.output.push(TerminalLine {
+                    self.output.lock().unwrap().push(TerminalLine {
                         text: format!("Process exited with status: {}", status),
                         style: LineStyle::Warning
                     });
                 },
                 Ok(None) => {
-                    self.output.push(TerminalLine {
+                    self.output.lock().unwrap().push(TerminalLine {
                         text: "Process is still running".to_string(),
                         style: LineStyle::Warning
                     });
                 },
                 Err(e) => {
-                    self.output.push(TerminalLine {
+                    self.output.lock().unwrap().push(TerminalLine {
                         text: format!("Error waiting for process: {}", e),
                         style: LineStyle::Error
                     });
                 }
             }
         } else {
-            self.output.push(TerminalLine {
+            self.output.lock().unwrap().push(TerminalLine {
                 text: "No active child process to terminate".to_string(),
                 style: LineStyle::Warning
             });
@@ -378,18 +359,16 @@ impl Terminal {
     }
 
     fn parse_and_style_output(&mut self, line: String) -> TerminalLine {
-        // Detect and style different types of output
         let style = match true {
             _ if line.contains("ERROR:") => LineStyle::Error,
             _ if line.contains("warning") => LineStyle::Warning,
             _ if line.starts_with("$ ") => {
-                // If the line starts with "$ ", strip it for display but keep Command style
                 let stripped_line = line.trim_start_matches("$ ").to_string();
-                self.output.push(TerminalLine {
+                self.output.lock().unwrap().push(TerminalLine {
                     text: stripped_line.clone(),
                     style: LineStyle::Command
                 });
-                LineStyle::Default // Prevent duplicate command line
+                LineStyle::Default
             },
             _ => self.detect_links_and_highlight(&line)
         };
@@ -398,10 +377,8 @@ impl Terminal {
     }
 
     pub fn update(&mut self) {
-        // Create a local vector to collect new lines
         let mut new_lines = Vec::new();
         
-        // Clone the receiver to avoid borrowing conflicts
         if let Some(rx) = self.stdout_rx.clone() {
             while let Ok(line) = rx.try_recv() {
                 let styled_line = self.parse_and_style_output(line);
@@ -409,8 +386,7 @@ impl Terminal {
             }
         }
         
-        // Extend the output with new lines
-        self.output.extend(new_lines);
+        self.output.lock().unwrap().extend(new_lines);
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
@@ -426,16 +402,14 @@ impl Terminal {
                 .max_height(available_height - 40.0)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    for line in &self.output {
+                    for line in self.output.lock().unwrap().iter() {
                         self.render_terminal_line(line, ui);
                     }
                 });
 
-            // Input handling with command history and auto-complete
             ui.horizontal(|ui| {
                 let response = ui.text_edit_singleline(&mut self.input);
                 
-                // Handle up/down arrow for command history
                 ui.input(|i| {
                     if i.key_pressed(egui::Key::ArrowUp) {
                         self.navigate_history(true);
@@ -445,22 +419,19 @@ impl Terminal {
                     }
                 });
 
-                // Execute on Enter
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     self.execute_command();
                 }
 
-                // Auto-complete trigger
                 if response.changed() {
                     self.auto_complete();
                 }
             });
 
-            // Auto-complete suggestions
-            if !self.auto_complete_suggestions.is_empty() {
+            if !self.auto_complete_suggestions.lock().unwrap().is_empty() {
                 egui::ComboBox::from_label("Suggestions")
                     .show_ui(ui, |ui| {
-                        for suggestion in &self.auto_complete_suggestions {
+                        for suggestion in self.auto_complete_suggestions.lock().unwrap().iter() {
                             if ui.button(suggestion).clicked() {
                                 self.input = suggestion.clone();
                             }
@@ -525,15 +496,15 @@ impl Terminal {
     }
 
     fn navigate_history(&mut self, previous: bool) {
-        if self.command_history.is_empty() {
+        let command_history = self.command_history.lock().unwrap();
+        if command_history.is_empty() {
             return;
         }
 
         match self.history_index {
             None => {
-                // Start from the end if going up, beginning if going down
                 self.history_index = Some(if previous {
-                    self.command_history.len() - 1
+                    command_history.len() - 1
                 } else {
                     0
                 });
@@ -541,21 +512,20 @@ impl Terminal {
             Some(index) => {
                 if previous && index > 0 {
                     self.history_index = Some(index - 1);
-                } else if !previous && index < self.command_history.len() - 1 {
+                } else if !previous && index < command_history.len() - 1 {
                     self.history_index = Some(index + 1);
                 }
             }
         }
 
         if let Some(index) = self.history_index {
-            self.input = self.command_history[index].clone();
+            self.input = command_history[index].clone();
         }
     }
 
     fn auto_complete(&mut self) {
-        // Basic auto-completion logic
         let current_input = self.input.clone();
-        self.auto_complete_suggestions = vec![
+        let suggestions = vec![
             "cd".to_string(),
             "ls".to_string(),
             "pwd".to_string(),
@@ -564,34 +534,30 @@ impl Terminal {
             "exit".to_string(),
         ].into_iter()
          .filter(|cmd| cmd.starts_with(&current_input))
-         .collect();
+         .collect::<Vec<_>>();
+
+        *self.auto_complete_suggestions.lock().unwrap() = suggestions;
     }
 
     pub fn add_output(&mut self, message: String) {
-        self.output.push(TerminalLine {
+        self.output.lock().unwrap().push(TerminalLine {
             text: message,
             style: LineStyle::Default
         });
     }
 
     fn restart_shell(&mut self) {
-        // Ensure previous processes are fully terminated
         self.exit();
     
-        // Reset running state
         self.running = Arc::new(AtomicBool::new(true));
     
-        // Get the current project path (portfolio)
         let current_project_path = self.current_directory.lock().unwrap().clone();
     
-        // Reset current directory to the current project path
         self.current_directory = Arc::new(Mutex::new(current_project_path.clone()));
     
-        // Recreate communication channels
         let (stdin_tx, stdin_rx) = unbounded();
         let (stdout_tx, stdout_rx) = unbounded();
     
-        // Spawn new shell and start IO threads
         let mut cmd = if cfg!(target_os = "windows") {
             Command::new("cmd")
         } else {
@@ -610,8 +576,7 @@ impl Terminal {
         self.stdout_rx = Some(stdout_rx);
         self.start_io_threads(stdin_rx, stdout_tx);
     
-        // Log restart with current project path
-        self.output.push(TerminalLine {
+        self.output.lock().unwrap().push(TerminalLine {
             text: format!("Shell restarted successfully in: {}", current_project_path.display()),
             style: LineStyle::Success
         });

@@ -29,6 +29,10 @@ regex = "1.11.1"
 jsonrpc-core = "18.0.0"
 futures = "0.3.31"
 directories = "6.0.0"
+lazy_static = "1.5.0"
+parking_lot = "0.12.3"
+memmap2 = "0.9.5"
+rayon = "1.10.0"
 
 [lib]
 name = "zzz"
