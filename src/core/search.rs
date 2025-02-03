@@ -55,7 +55,7 @@ fn search_in_directory_with_exclusions(
     fs: &Rc<FileSystem>,
     dir: &Path,
     query: &str,
-    results: &mut Vec<SearchResult>, // Use the shared SearchResult
+    results: &mut Vec<SearchResult>,
     max_results: usize,
     excluded_dirs: &[&str],
 ) {
@@ -149,32 +149,51 @@ pub fn show_search_modal(ide: &mut IDE, ctx: &Context) {
 
                             let response = ui.button(display_text);
                             if response.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                // First, clear any existing highlights
+                                ide.code_editor.search_highlight_text = None;
+                                ide.code_editor.search_selected_line = None;
+                                ide.code_editor.selected_match_position = None;
+                                
                                 // Open the file if it's a project search
                                 if is_project_search {
                                     if let Some(file_path) = &result.file_path {
                                         ide.file_modal.open_file(file_path, &mut ide.code_editor);
                                     }
                                 }
-                        
-                                // Set up highlighting first
+                            
+                                // Calculate absolute position of the match in the file
+                                if let Some(buffer) = ide.code_editor.get_active_buffer() {
+                                    let content = &buffer.content;
+                                    let mut line_start = 0;
+                                    for _ in 0..result.line_number.saturating_sub(1) {
+                                        if let Some(next_line) = content[line_start..].find('\n') {
+                                            line_start += next_line + 1;
+                                        }
+                                    }
+                                    
+                                    if let Some(column_offset) = result.line_content.find(&ide.search_query) {
+                                        let match_start = line_start + column_offset;
+                                        let match_end = match_start + ide.search_query.len();
+                                        ide.code_editor.selected_match_position = Some((match_start, match_end));
+                                        
+                                        // Set cursor position
+                                        if let Some(buffer) = ide.code_editor.get_active_buffer_mut() {
+                                            buffer.set_cursor_position(result.line_number, column_offset);
+                                            buffer.is_modified = false;
+                                        }
+                                    }
+                                }
+                            
+                                // Set up highlighting
+                                ide.code_editor.search_selected_line = Some(result.line_number);
                                 ide.code_editor.search_highlight_text = Some(ide.search_query.clone());
                                 ide.code_editor.search_highlight_expires_at = Some(
-                                    std::time::Instant::now() + std::time::Duration::from_secs_f64(2.0) // Increased duration
+                                    std::time::Instant::now() + std::time::Duration::from_secs_f64(0.5)
                                 );
-                                ide.code_editor.search_selected_line = Some(result.line_number);
-                        
-                                // Then set cursor position
-                                if let Some(buffer) = ide.code_editor.get_active_buffer_mut() {
-                                    buffer.set_cursor_position(
-                                        result.line_number,
-                                        result.line_content.find(&ide.search_query).unwrap_or(0),
-                                    );
-                                    buffer.is_modified = false; // Prevent highlight from being cleared
-                                }
-                        
+                            
                                 // Request a repaint to ensure highlighting is visible
                                 ctx.request_repaint();
-                        
+                            
                                 // Close the search modals
                                 ide.show_current_file_search_modal = false;
                                 ide.show_project_search_modal = false;

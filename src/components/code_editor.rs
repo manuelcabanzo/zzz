@@ -94,6 +94,7 @@ pub struct CodeEditor {
     pub search_selected_line: Option<usize>,
     pub logo_texture: Option<egui::TextureHandle>,
     highlight_cache: HighlightCache,
+    pub selected_match_position: Option<(usize, usize)>,
 }
 
 impl CodeEditor {
@@ -110,6 +111,7 @@ impl CodeEditor {
             search_selected_line: None,
             logo_texture: None,
             highlight_cache: HighlightCache::new(),
+            selected_match_position: None,
         }
     }
 
@@ -305,6 +307,7 @@ impl CodeEditor {
                                 search_highlight.as_deref(),
                                 selected_line,
                                 &mut self.highlight_cache,
+                                self.selected_match_position
                             );
                             layout_job.wrap.max_width = wrap_width;
                             ui.fonts(|f| f.layout_job(layout_job))
@@ -370,6 +373,7 @@ fn highlight_syntax(
     search_highlight: Option<&str>,
     selected_line: Option<usize>,
     cache: &mut HighlightCache,
+    selected_match_position: Option<(usize, usize)>, // Add this parameter
 ) -> egui::text::LayoutJob {
     let syntax = syntax_set.find_syntax_by_name(current_syntax)
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
@@ -377,18 +381,17 @@ fn highlight_syntax(
 
     let mut job = egui::text::LayoutJob::default();
     
-    // Don't use cache when we have active highlighting
-    if search_highlight.is_none() && selected_line.is_none() {
+    if search_highlight.is_none() && selected_line.is_none() && selected_match_position.is_none() {
         let cache_key = (current_syntax.to_string(), code.to_string());
         if let Some(cached_job) = cache.jobs.get(&cache_key) {
             return cached_job.clone();
         }
     }
 
+    let mut absolute_position = 0;
     for (line_index, line) in LinesWithEndings::from(code).enumerate() {
         let is_selected_line = selected_line.map_or(false, |sel| line_index + 1 == sel);
         
-        // Apply background highlight for selected line
         if is_selected_line {
             job.append(
                 "",
@@ -403,6 +406,15 @@ fn highlight_syntax(
         if let Some(search_text) = search_highlight {
             let mut last_end = 0;
             for (start, end) in find_all_occurrences(line, search_text) {
+                let abs_start = absolute_position + start;
+                let abs_end = absolute_position + end;
+                
+                // Only highlight if this is the selected match position
+                let should_highlight = selected_match_position
+                    .map_or(false, |(sel_start, sel_end)| {
+                        abs_start == sel_start && abs_end == sel_end
+                    });
+
                 // Add non-highlighted text before match
                 if start > last_end {
                     for (style, text) in highlighter.highlight_line(&line[last_end..start], syntax_set).unwrap() {
@@ -410,12 +422,18 @@ fn highlight_syntax(
                     }
                 }
 
-                // Add highlighted text
-                let highlight_format = egui::TextFormat {
-                    background: egui::Color32::from_rgba_unmultiplied(255, 215, 0, 100), // golden highlight
-                    ..Default::default()
-                };
-                job.append(&line[start..end], 0.0, highlight_format);
+                // Add highlighted or normal text for the match
+                if should_highlight {
+                    let highlight_format = egui::TextFormat {
+                        background: egui::Color32::from_rgba_unmultiplied(255, 215, 0, 100),
+                        ..Default::default()
+                    };
+                    job.append(&line[start..end], 0.0, highlight_format);
+                } else {
+                    for (style, text) in highlighter.highlight_line(&line[start..end], syntax_set).unwrap() {
+                        job.append(text, 0.0, style_to_text_format(style));
+                    }
+                }
 
                 last_end = end;
             }
@@ -432,10 +450,11 @@ fn highlight_syntax(
                 job.append(text, 0.0, style_to_text_format(style));
             }
         }
+        
+        absolute_position += line.len();
     }
 
-    // Only cache when there's no active highlighting
-    if search_highlight.is_none() && selected_line.is_none() {
+    if search_highlight.is_none() && selected_line.is_none() && selected_match_position.is_none() {
         let cache_key = (current_syntax.to_string(), code.to_string());
         cache.jobs.put(cache_key, job.clone());
     }
