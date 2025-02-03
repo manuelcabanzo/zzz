@@ -13,6 +13,7 @@ use tokio::runtime::Runtime;
 use std::sync::Arc;
 use super::git_manager::GitManager;
 use super::search::{show_search_modal, SearchResult};
+use crate::core::extension::ExtensionManager;
 
 pub struct IDE {
     pub file_modal: FileModal,
@@ -38,6 +39,7 @@ pub struct IDE {
     pub search_highlight_text: Option<String>,
     pub search_focus_requested: bool,
     pub ai_model: String,
+    pub extension_manager: ExtensionManager,
 }
 
 impl IDE {
@@ -77,6 +79,7 @@ impl IDE {
             search_highlight_text: None,
             search_focus_requested: false,
             ai_model: state.ai_model.clone(),
+            extension_manager: ExtensionManager::new(state.clone()),
         };
 
         let _guard = tokio_runtime.enter();
@@ -98,8 +101,15 @@ impl IDE {
         }
         state.apply_to_ide(&mut ide);
         ide.settings_modal.apply_theme(&cc.egui_ctx);
+        ide.load_extensions();
 
         ide
+    }
+
+    fn load_extensions(&mut self) {
+        // Add logic to discover and load extensions from filesystem
+        // Example manual load:
+        // self.extension_manager.load_extension(Box::new(ExampleExtension));
     }
 
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, _ui: &mut egui::Ui) {
@@ -317,6 +327,7 @@ impl IDE {
         self.console_panel.update(ctx);
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg));
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
+        self.extension_manager.process_commands(&mut self.console_panel);
 
         if self.show_ai_panel {
             egui::SidePanel::right("ai_panel")

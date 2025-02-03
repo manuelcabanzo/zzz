@@ -9,7 +9,7 @@ use crate::components::code_editor::{Buffer, CursorPosition};
 use std::path::Path;
 use crate::core::file_system::FileSystem;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppState {
     // File and editor state
     #[serde(with = "serde_path_buf")]
@@ -53,7 +53,7 @@ mod serde_path_buf {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BufferState {
     pub file_path: String,
     pub cursor_position: CursorPosition,
