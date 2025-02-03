@@ -40,10 +40,10 @@ pub fn perform_project_search(ide: &mut IDE) {
 
     if let Some(fs) = &ide.file_modal.file_system {
         if let Some(project_path) = &ide.file_modal.project_path {
-            let query = ide.search_query.trim();
+            let query = ide.search_query.trim().to_lowercase();
             if query.len() >= 2 {
                 search_in_directory_with_exclusions(
-                    fs, project_path, query, &mut results, MAX_RESULTS, &excluded_dirs,
+                    fs, project_path, &query, &mut results, MAX_RESULTS, &excluded_dirs,
                 );
             }
         }
@@ -91,7 +91,7 @@ fn search_in_directory_with_exclusions(
                     let file_results = content
                         .lines()
                         .enumerate()
-                        .filter(|(_, line)| line.contains(query))
+                        .filter(|(_, line)| line.to_lowercase().contains(query))
                         .take(10)
                         .map(|(line_num, line)| SearchResult {
                             line_number: line_num + 1,

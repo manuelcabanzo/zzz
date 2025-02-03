@@ -459,21 +459,33 @@ impl FileModal {
         let mut results = Vec::new();
         if let Some(fs) = &self.file_system {
             if let Some(project_path) = &self.project_path {
-                self.search_directory(fs, project_path, query, &mut results);
+                let excluded_dirs = vec![
+                    "build", "target", "out", "bin", "node_modules", ".gradle", "gradle", "captures",
+                    ".git", ".svn", ".idea", ".vscode", "app/build", "androidTest", "test", "debug",
+                    "release", "shared/build", "commonMain", "androidMain", "iosMain", "__MACOSX",
+                    ".DS_Store", "*.xcodeproj", "*.iml",
+                ];
+                self.search_directory(fs, project_path, query, &mut results, &excluded_dirs);
             }
         }
         results
     }
 
-    fn search_directory(&self, fs: &Rc<FileSystem>, dir: &Path, query: &str, results: &mut Vec<String>) {
+    fn search_directory(&self, fs: &Rc<FileSystem>, dir: &Path, query: &str, results: &mut Vec<String>, excluded_dirs: &[&str]) {
+        let query_lower = query.to_lowercase();
         if let Ok(entries) = fs.list_directory(dir) {
             for entry in entries {
                 let path = dir.join(&entry.name);
-                if entry.name.contains(query) {
-                    results.push(path.to_str().unwrap().to_string());
-                }
                 if entry.is_dir {
-                    self.search_directory(fs, &path, query, results);
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if excluded_dirs.iter().any(|&excluded| dir_name == excluded || dir_name.starts_with(excluded) || dir_name.contains(excluded)) {
+                        continue;
+                    }
+                    self.search_directory(fs, &path, query, results, excluded_dirs);
+                } else {
+                    if entry.name.to_lowercase().contains(&query_lower) {
+                        results.push(path.to_str().unwrap().to_string());
+                    }
                 }
             }
         }
