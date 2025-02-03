@@ -288,6 +288,9 @@ impl IDE {
                 self.emulator_panel.show(ui);
             });
 
+        self.code_editor.clear_expired_highlights();
+
+
         ctx.data_mut(|data| {
             let frame_count = data.get_temp::<u32>(egui::Id::new("frame_count")).unwrap_or(0);
             let should_update = frame_count % 3 == 0;

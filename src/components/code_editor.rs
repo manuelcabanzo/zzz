@@ -376,46 +376,82 @@ fn highlight_syntax(
     let mut highlighter = HighlightLines::new(syntax, &theme_set.themes["base16-ocean.dark"]);
 
     let mut job = egui::text::LayoutJob::default();
-
-    let cache_key = (current_syntax.to_string(), code.to_string());
     
-    if let Some(job) = cache.jobs.get(&cache_key) {
-        return job.clone();
+    // Don't use cache when we have active highlighting
+    if search_highlight.is_none() && selected_line.is_none() {
+        let cache_key = (current_syntax.to_string(), code.to_string());
+        if let Some(cached_job) = cache.jobs.get(&cache_key) {
+            return cached_job.clone();
+        }
     }
 
     for (line_index, line) in LinesWithEndings::from(code).enumerate() {
-        let should_highlight = selected_line.map_or(false, |sel| line_index + 1 == sel);
+        let is_selected_line = selected_line.map_or(false, |sel| line_index + 1 == sel);
+        
+        // Apply background highlight for selected line
+        if is_selected_line {
+            job.append(
+                "",
+                0.0,
+                egui::TextFormat {
+                    background: egui::Color32::from_rgba_unmultiplied(60, 60, 60, 255),
+                    ..Default::default()
+                },
+            );
+        }
 
-        if let Some(highlight_text) = search_highlight {
-            if should_highlight && line.contains(highlight_text) {
-                let parts: Vec<&str> = line.split(highlight_text).collect();
-                for (i, part) in parts.iter().enumerate() {
-                    for (style, text) in highlighter.highlight_line(part, syntax_set).unwrap() {
+        if let Some(search_text) = search_highlight {
+            let mut last_end = 0;
+            for (start, end) in find_all_occurrences(line, search_text) {
+                // Add non-highlighted text before match
+                if start > last_end {
+                    for (style, text) in highlighter.highlight_line(&line[last_end..start], syntax_set).unwrap() {
                         job.append(text, 0.0, style_to_text_format(style));
                     }
-                    
-                    if i < parts.len() - 1 {
-                        let highlight_format = egui::TextFormat {
-                            background: egui::Color32::from_rgba_unmultiplied(255, 255, 0, 100),
-                            ..egui::TextFormat::default()
-                        };
-                        job.append(highlight_text, 0.0, highlight_format);
-                    }
                 }
-            } else {
-                for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
+
+                // Add highlighted text
+                let highlight_format = egui::TextFormat {
+                    background: egui::Color32::from_rgba_unmultiplied(255, 215, 0, 100), // golden highlight
+                    ..Default::default()
+                };
+                job.append(&line[start..end], 0.0, highlight_format);
+
+                last_end = end;
+            }
+
+            // Add remaining non-highlighted text
+            if last_end < line.len() {
+                for (style, text) in highlighter.highlight_line(&line[last_end..], syntax_set).unwrap() {
                     job.append(text, 0.0, style_to_text_format(style));
                 }
             }
         } else {
+            // No search highlight, just apply syntax highlighting
             for (style, text) in highlighter.highlight_line(line, syntax_set).unwrap() {
                 job.append(text, 0.0, style_to_text_format(style));
             }
         }
     }
 
-    cache.jobs.put(cache_key, job.clone());
+    // Only cache when there's no active highlighting
+    if search_highlight.is_none() && selected_line.is_none() {
+        let cache_key = (current_syntax.to_string(), code.to_string());
+        cache.jobs.put(cache_key, job.clone());
+    }
+
     job
+}
+
+fn find_all_occurrences(text: &str, pattern: &str) -> Vec<(usize, usize)> {
+    let mut results = Vec::new();
+    let mut start = 0;
+    while let Some(pos) = text[start..].find(pattern) {
+        let absolute_pos = start + pos;
+        results.push((absolute_pos, absolute_pos + pattern.len()));
+        start = absolute_pos + 1;
+    }
+    results
 }
 
 fn calculate_line_column(text: &str, position: usize) -> (usize, usize) {

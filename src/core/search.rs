@@ -149,21 +149,33 @@ pub fn show_search_modal(ide: &mut IDE, ctx: &Context) {
 
                             let response = ui.button(display_text);
                             if response.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                // Open the file if it's a project search
                                 if is_project_search {
                                     if let Some(file_path) = &result.file_path {
                                         ide.file_modal.open_file(file_path, &mut ide.code_editor);
                                     }
                                 }
-
+                        
+                                // Set up highlighting first
+                                ide.code_editor.search_highlight_text = Some(ide.search_query.clone());
+                                ide.code_editor.search_highlight_expires_at = Some(
+                                    std::time::Instant::now() + std::time::Duration::from_secs_f64(2.0) // Increased duration
+                                );
+                                ide.code_editor.search_selected_line = Some(result.line_number);
+                        
+                                // Then set cursor position
                                 if let Some(buffer) = ide.code_editor.get_active_buffer_mut() {
                                     buffer.set_cursor_position(
                                         result.line_number,
                                         result.line_content.find(&ide.search_query).unwrap_or(0),
                                     );
+                                    buffer.is_modified = false; // Prevent highlight from being cleared
                                 }
-
-                                ide.code_editor.search(&ide.search_query, Some(result.line_number));
-
+                        
+                                // Request a repaint to ensure highlighting is visible
+                                ctx.request_repaint();
+                        
+                                // Close the search modals
                                 ide.show_current_file_search_modal = false;
                                 ide.show_project_search_modal = false;
                             }
