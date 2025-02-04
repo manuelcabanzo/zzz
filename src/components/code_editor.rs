@@ -1,15 +1,15 @@
 use eframe::egui;
-use image::GenericImageView;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use std::sync::Arc;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use lru::LruCache;
 use std::num::NonZeroUsize;
+use crate::core::constants::AppConstants;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CursorPosition {
@@ -139,15 +139,18 @@ impl CodeEditor {
 
     pub fn load_logo(&mut self, ctx: &egui::Context) -> Result<(), image::ImageError> {
         if self.logo_texture.is_none() {
-            let logo_path = PathBuf::from("src/resources/icons/app.png");
-            let img = image::open(&logo_path)?;
-            let dimensions = img.dimensions();
-            let rgba = img.into_rgba8();
-            let pixels = rgba.as_flat_samples();
+            // Use the icon from AppConstants
+            let constants = AppConstants::load();
+            let icon_data = &*constants.icon;
+            
+            // Create texture from the icon data
+            let dimensions = [icon_data.width as _, icon_data.height as _];
+            let pixels = &icon_data.rgba;
             let image = egui::ColorImage::from_rgba_unmultiplied(
-                [dimensions.0 as _, dimensions.1 as _],
-                pixels.as_slice(),
+                dimensions,
+                pixels
             );
+            
             self.logo_texture = Some(ctx.load_texture(
                 "logo",
                 image,
