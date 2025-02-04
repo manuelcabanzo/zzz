@@ -95,7 +95,7 @@ impl ExtensionManager {
                     // Add logic to open files in editor
                     console.log(&format!("Requested to open: {}", path.display()));
                 }
-                ExtensionCommand::SetEditorContent(content) => {
+                ExtensionCommand::SetEditorContent(_content) => {
                     // Add logic to update editor content
                     console.log("Received editor content update request");
                 }

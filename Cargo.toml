@@ -2,6 +2,7 @@
 name = "zzz"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 egui = {version = "0.28.1", features = ["persistence"] }
@@ -53,3 +54,6 @@ panic = "abort"
 default = ["windows"]
 unix = ["nix"]
 windows = ["winapi"]
+
+[build-dependencies]
+winres = "0.1.12"

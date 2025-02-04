@@ -6,6 +6,7 @@ pub mod core {
     pub mod git_manager;
     pub mod search;
     pub mod extension;
+    pub mod constants;
 }
 
 pub mod utils {

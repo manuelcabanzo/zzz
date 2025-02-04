@@ -139,7 +139,7 @@ impl CodeEditor {
 
     pub fn load_logo(&mut self, ctx: &egui::Context) -> Result<(), image::ImageError> {
         if self.logo_texture.is_none() {
-            let logo_path = PathBuf::from("src/resources/blacksquare.png");
+            let logo_path = PathBuf::from("src/resources/icons/app.png");
             let img = image::open(&logo_path)?;
             let dimensions = img.dimensions();
             let rgba = img.into_rgba8();
