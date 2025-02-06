@@ -44,7 +44,7 @@ impl FileModal {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str)) {
+    pub fn show(&mut self, ctx: &egui::Context, code_editor: &mut CodeEditor, log: &mut dyn FnMut(&str), ai_assistant: &mut crate::components::ai_assistant::AIAssistant) {
         if !self.show {
             return;
         }
@@ -99,7 +99,7 @@ impl FileModal {
                             ui.set_min_width(ui.available_width());
                             self.render_folder_contents(
                                 ui, ctx, &project_path, &fs, code_editor,
-                                log, 0,
+                                log, 0, ai_assistant,
                             );
                         });
                     } else {
@@ -120,6 +120,7 @@ impl FileModal {
         code_editor: &mut CodeEditor,
         log: &mut dyn FnMut(&str),
         indent_level: usize,
+        ai_assistant: &mut crate::components::ai_assistant::AIAssistant,
     ) { 
         if let Ok(entries) = fs.list_directory(folder) {
             for entry in entries {
@@ -205,7 +206,13 @@ impl FileModal {
                         }
     
                         if response.double_clicked() {
-                            self.start_rename(&path);
+                            if !ai_assistant.context_files.iter().any(|f| f.path == path.to_str().unwrap()) {
+                                ai_assistant.context_files.push(crate::components::ai_assistant::ContextFile {
+                                    path: path.to_str().unwrap().to_string(),
+                                    content: String::new(), // Content should be loaded here
+                                    is_active: true,
+                                });
+                            }
                         }
     
                         if response.secondary_clicked() {
@@ -223,7 +230,7 @@ impl FileModal {
                             let hover_text = if is_dir {
                                 "Click to expand/collapse, double-click to rename"
                             } else {
-                                "Click to open, double-click to rename"
+                                "Click to open, double-click to add to context"
                             };
                             response.on_hover_text(hover_text);
                         }
@@ -238,7 +245,8 @@ impl FileModal {
                         fs,
                         code_editor,
                         log,
-                        indent_level + 1
+                        indent_level + 1,
+                        ai_assistant,
                     );
                 }
             }
@@ -495,12 +503,10 @@ impl FileModal {
         let mut all_paths = Vec::new();
         
         if let (Some(fs), Some(project_path)) = (&self.file_system, &self.project_path) {
-            // Reuse excluded directories from search_files to maintain consistency
+            // Minimal excluded directories (only truly unnecessary files)
             let excluded_dirs = vec![
-                "build", "target", "out", "bin", "node_modules", ".gradle", "gradle", "captures",
-                ".git", ".svn", ".idea", ".vscode", "app/build", "androidTest", "test", "debug",
-                "release", "shared/build", "commonMain", "androidMain", "iosMain", "__MACOSX",
-                ".DS_Store", "*.xcodeproj", "*.iml",
+                "node_modules", ".git", ".cache", "dist", "build", 
+                "package-lock.json", "yarn.lock", ".DS_Store"
             ];
             
             // Use a recursive closure to traverse the directory tree
@@ -519,30 +525,48 @@ impl FileModal {
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("");
                                 
-                            // Skip excluded directories
-                            if excluded_dirs.iter().any(|&excluded| 
-                                dir_name == excluded || 
-                                dir_name.starts_with(excluded) || 
-                                dir_name.contains(excluded)
-                            ) {
+                            // Skip only truly unnecessary directories (exact matches only)
+                            if excluded_dirs.contains(&dir_name) {
                                 continue;
                             }
                             
-                            collect_files(fs, &path, paths, excluded_dirs);
+                            // Always include common project directories
+                            if matches!(
+                                dir_name,
+                                "src" | "layouts" | "pages" | "components" | "lib" | "utils" | "public" | "assets"
+                            ) {
+                                collect_files(fs, &path, paths, excluded_dirs);
+                            } else {
+                                // For other directories, check if they contain relevant files
+                                collect_files(fs, &path, paths, excluded_dirs);
+                            }
                         } else {
-                            // Only add files that are likely to be source code or text
+                            // Get lowercase extension
                             let extension = path.extension()
                                 .and_then(|ext| ext.to_str())
-                                .unwrap_or("");
-                                
-                            let is_text_file = matches!(extension, 
-                                "rs" | "ts" | "js" | "py" | "java" | "kt" | "cpp" | "h" | "hpp" |
-                                "c" | "cs" | "go" | "rb" | "php" | "html" | "css" | "json" | "yaml" |
-                                "yml" | "toml" | "md" | "txt" | "xml" | "gradle" | "properties" |
-                                "sh" | "bat" | "cmd" | "ps1" | "sql" | "swift" | "m" | "mm"
+                                .map(|ext| ext.to_lowercase())
+                                .unwrap_or_default();
+    
+                            // Include files with common extensions
+                            let is_relevant_file = matches!(
+                                extension.as_str(),
+                                // Web development
+                                "js" | "jsx" | "ts" | "tsx" | "css" | "scss" | "sass" | "html" |
+                                // Markdown and documentation
+                                "md" | "mdx" | "txt" |
+                                // Configuration
+                                "json" | "toml" | "yaml" | "yml" | "env" |
+                                // Common source files
+                                "rs" | "kt" | "java" | "go" | "py" | "rb" | "php" | "swift"
                             );
-                            
-                            if is_text_file {
+    
+                            // Include common config files regardless of extension
+                            let is_config_file = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| n.starts_with(".") || n == "config" || n.ends_with("config") || n == "package.json")
+                                .unwrap_or(false);
+    
+                            if is_relevant_file || is_config_file {
                                 if let Some(path_str) = path.to_str() {
                                     paths.push(path_str.to_string());
                                 }

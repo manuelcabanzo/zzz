@@ -2,23 +2,23 @@ use eframe::egui;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use std::collections::{VecDeque, HashSet};
+use std::collections::VecDeque;
 use chrono::Local;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextFile { // Make this struct public
+    pub path: String, // Make this field public
+    pub content: String, // Make this field public
+    pub is_active: bool, // Make this field public
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     content: String,
     is_user: bool,
     timestamp: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ContextFile {
-    path: String,
-    content: String,
-    is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ pub struct AIAssistant {
     api_key: String,
     input_text: String,
     chat_history: VecDeque<Message>,
-    context_files: Vec<ContextFile>,
+    pub context_files: Vec<ContextFile>, // Make this field public
     is_loading: bool,
     http_client: Client,
     tx: mpsc::Sender<String>,
@@ -71,11 +71,7 @@ pub struct AIAssistant {
     runtime: Arc<Runtime>,
     last_ai_response: Option<String>,
     model: String,
-    show_file_selector: bool,
-    available_files: Vec<String>,
-    selected_files: HashSet<String>,
 }
-
 
 impl AIAssistant {
     const MAX_RETRIES: u32 = 3;
@@ -102,18 +98,11 @@ impl AIAssistant {
             runtime,
             last_ai_response: None,
             model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
-            show_file_selector: false,
-            available_files: Vec::new(),
-            selected_files: HashSet::new(),
         }
     }
 
     pub fn update_model(&mut self, new_model: String) {
         self.model = new_model;
-    }
-
-    pub fn update_available_files(&mut self, file_paths: Vec<String>) {
-        self.available_files = file_paths;
     }
 
     fn format_chat_messages(&self, file_content: &str, current_question: &str) -> Vec<ChatMessage> {
@@ -418,15 +407,6 @@ impl AIAssistant {
                     ui.heading("AI Assistant");
                     ui.add_space(8.0);
 
-                    // File Selection UI
-                    if ui.button("Manage Context Files").clicked() {
-                        self.show_file_selector = !self.show_file_selector;
-                    }
-
-                    if self.show_file_selector {
-                        self.show_file_selector_ui(ui);
-                    }
-
                     // Active Context Files Display
                     if !self.context_files.is_empty() {
                         ui.collapsing("Active Context Files", |ui| {
@@ -440,9 +420,6 @@ impl AIAssistant {
                                     if ui.small_button("×").clicked() {
                                         // Mark this index for removal
                                         to_remove.push(index);
-                                        // Remove from selected_files as well
-                                        self.selected_files.remove(&file.path);
-                                        println!("Removing file from context: {}", file.path);
                                     }
                                 });
                             }
@@ -479,57 +456,6 @@ impl AIAssistant {
             self.add_message(response, false);
             self.is_loading = false;
         }
-    }
-    
-    fn show_file_selector_ui(&mut self, ui: &mut egui::Ui) {
-        // Add debug prints to see what files are available
-        println!("Available files: {:?}", self.available_files);
-        println!("Currently selected files: {:?}", self.selected_files);
-    
-        egui::Window::new("Select Context Files")
-            .collapsible(false)
-            .show(ui.ctx(), |ui| {
-                ui.vertical(|ui| {
-                    // Show the count of available files
-                    ui.label(format!("Total files available: {}", self.available_files.len()));
-                    
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
-                            for file_path in &self.available_files {
-                                let mut is_selected = self.selected_files.contains(file_path);
-                                ui.horizontal(|ui| {
-                                    if ui.checkbox(&mut is_selected, "").changed() {
-                                        println!("Checkbox clicked for file: {}", file_path);
-                                        if is_selected {
-                                            println!("Adding file to selected files: {}", file_path);
-                                            self.selected_files.insert(file_path.clone());
-                                            // Add to context files if not already present
-                                            if !self.context_files.iter().any(|f| f.path == *file_path) {
-                                                println!("Adding new context file: {}", file_path);
-                                                self.context_files.push(ContextFile {
-                                                    path: file_path.clone(),
-                                                    content: String::new(), // Content should be loaded here
-                                                    is_active: true,
-                                                });
-                                            }
-                                        } else {
-                                            println!("Removing file from selected files: {}", file_path);
-                                            self.selected_files.remove(file_path);
-                                            self.context_files.retain(|f| f.path != *file_path);
-                                        }
-                                    }
-                                    ui.label(file_path);
-                                });
-                            }
-                        });
-                    
-                    // Add debug information at the bottom
-                    ui.separator();
-                    ui.label(format!("Selected files count: {}", self.selected_files.len()));
-                    ui.label(format!("Context files count: {}", self.context_files.len()));
-                });
-            });
     }
 }
 
