@@ -209,7 +209,7 @@ impl FileModal {
                             if !ai_assistant.context_files.iter().any(|f| f.path == path.to_str().unwrap()) {
                                 ai_assistant.context_files.push(crate::components::ai_assistant::ContextFile {
                                     path: path.to_str().unwrap().to_string(),
-                                    content: String::new(), // Content should be loaded here
+                                    content: fs.open_file(&path).unwrap_or_default(),
                                     is_active: true,
                                 });
                             }
