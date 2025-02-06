@@ -385,7 +385,8 @@ impl IDE {
                 });
         }
 
-        self.settings_modal.show(ctx);
+        let mut settings_modal = self.settings_modal.clone();
+        settings_modal.show(ctx, self);
         self.show_file_search_modal(ctx);
     }
 }

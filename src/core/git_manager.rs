@@ -13,6 +13,7 @@ pub struct GitCommit {
     pub message: String,
 }
 
+#[derive(Clone)]
 pub struct GitManager {
     repo_path: PathBuf,
     is_checking_out: Arc<AtomicBool>,
@@ -109,41 +110,22 @@ impl GitManager {
         Ok(commits)
     }
 
-    /// Checks out a specific commit by its hash.
-    pub fn checkout_commit(&self, commit_hash: &str) -> Result<(), String> {
-        // Prevent multiple concurrent checkouts
+    pub fn reset_to_commit(&self, commit_hash: &str) -> Result<(), String> {
         if self.is_checking_out.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-            return Err("Another checkout operation is in progress".to_string());
+            return Err("Another operation is in progress".to_string());
         }
 
-        let result = self.perform_checkout(commit_hash);
+        let result = self.perform_reset(commit_hash);
         self.is_checking_out.store(false, Ordering::SeqCst);
         result
     }
 
-    /// Performs the actual checkout operation.
-    fn perform_checkout(&self, commit_hash: &str) -> Result<(), String> {
-        self.reset_and_clean()?;
-        self.force_checkout(commit_hash)
+    fn perform_reset(&self, commit_hash: &str) -> Result<(), String> {
+        self.run_git_command_with_check(
+            &["reset", "--hard", commit_hash],
+            &format!("Failed to reset to commit {}", commit_hash)
+        )
     }
-
-    /// Resets the repository to HEAD and cleans untracked files.
-    fn reset_and_clean(&self) -> Result<(), String> {
-        self.run_git_command_with_check(&["reset", "--hard", "HEAD"], "Failed to reset changes")?;
-        self.run_git_command_with_check(&["clean", "-fd"], "Failed to clean repository")
-    }
-
-    /// Forces a checkout to the specified commit.
-    fn force_checkout(&self, commit_hash: &str) -> Result<(), String> {
-        self.run_git_command_with_check(&["checkout", "--force", commit_hash], "Checkout failed")
-    }
-
-    /// Checks if a checkout operation is currently in progress.
-    pub fn is_checkout_in_progress(&self) -> bool {
-        self.is_checking_out.load(Ordering::SeqCst)
-    }
-
-    // Helper methods
 
     fn run_git_command(args: &[&str], repo_path: &PathBuf) -> Result<std::process::Output, String> {
         Command::new("git")

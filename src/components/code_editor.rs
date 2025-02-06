@@ -3,6 +3,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{ThemeSet, Style};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use crate::core::constants::AppConstants;
+use crate::core::file_system::FileSystem;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CursorPosition {
@@ -135,6 +137,21 @@ impl CodeEditor {
         let index = self.buffers.len() - 1;
         self.active_buffer_index = Some(index);
         index
+    }
+
+    pub fn reload_all_buffers(&mut self, fs: &Rc<FileSystem>, log: &mut impl FnMut(&str)) {
+        for buffer in &mut self.buffers {
+            if let Some(file_path) = &buffer.file_path {
+                match fs.open_file(Path::new(file_path)) {
+                    Ok(content) => {
+                        buffer.content = content;
+                        buffer.is_modified = false;
+                        log(&format!("Reloaded {}", file_path));
+                    },
+                    Err(e) => log(&format!("Failed to reload {}: {}", file_path, e)),
+                }
+            }
+        }
     }
 
     pub fn load_logo(&mut self, ctx: &egui::Context) -> Result<(), image::ImageError> {

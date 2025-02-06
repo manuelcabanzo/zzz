@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use eframe::egui;
-use crate::{core::git_manager::{GitCommit, GitManager}, utils::themes::{custom_theme, Theme}};
+use crate::{core::{git_manager::{GitCommit, GitManager}, ide::IDE}, utils::themes::{custom_theme, Theme}};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
@@ -9,6 +9,7 @@ pub enum SettingsTab {
     Git,
 }
 
+#[derive(Clone)]
 pub struct SettingsModal {
     pub show: bool,
     settings_tab: SettingsTab,
@@ -21,7 +22,7 @@ pub struct SettingsModal {
     commits: Vec<GitCommit>,
     selected_commit: Option<String>,
 }
-
+    
 impl SettingsModal {
     pub fn new() -> Self {
         Self {
@@ -97,70 +98,40 @@ impl SettingsModal {
         }
     }
 
-    fn show_git_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn show_git_settings(&mut self, ide: &mut IDE, ui: &mut egui::Ui) {
         ui.heading("Git History");
         ui.add_space(10.0);
         if let Some(git_manager) = &self.git_manager {
-            // Check if checkout is in progress
-            if git_manager.is_checkout_in_progress() {
-                ui.spinner();
-                ui.label("Checkout in progress...");
-                return;
-            }
-            if self.commits.is_empty() {
-                match git_manager.get_commits() {
-                    Ok(commits) => {
-                        self.commits = commits;
-                    }
-                    Err(e) => {
-                        ui.label(format!("Error fetching commits: {}", e));
-                        return;
-                    }
-                }
-            }
-            if self.commits.is_empty() {
-                ui.label("No commits found in repository.");
-            } else {
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .id_source("git_history_scroll")
-                    .show(ui, |ui| {
-                        for commit in &self.commits {
-                            ui.add_space(5.0);
-                            let is_selected = self.selected_commit.as_ref() == Some(&commit.hash);
-
-                            egui::Frame::none()
-                                .fill(if is_selected {
-                                    ui.style().visuals.selection.bg_fill
-                                } else {
-                                    ui.style().visuals.window_fill
-                                })
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.strong(format!("Commit: {}", &commit.hash[..8]));
-                                        ui.label(format!("| {}", commit.date.format("%Y-%m-%d %H:%M")));
-                                    });
-                                    ui.label(format!("Author: {}", commit.author));
-                                    ui.label(&commit.message);
-
-                                    if ui.button("Checkout").clicked() && !is_selected {
-                                        if let Err(e) = git_manager.checkout_commit(&commit.hash) {
-                                            println!("Checkout error: {}", e);
-                                        } else {
-                                            self.selected_commit = Some(commit.hash.clone());
-                                            ctx.request_repaint();  // Simple repaint request
-                                        }
-                                    }
-                                });
+            if let Ok(commits) = git_manager.get_commits() {
+                for commit in commits {
+                    ui.horizontal(|ui| {
+                        ui.label(&commit.hash);
+                        if ui.button("Reset to This Commit").clicked() {
+                            match git_manager.reset_to_commit(&commit.hash) {
+                                Ok(()) => {
+                                    // Force reload of filesystem
+                                    ide.file_modal.reload_file_system();
+                                    // Reload all open buffers
+                                    ide.code_editor.reload_all_buffers(
+                                        &ide.file_modal.file_system.as_ref().unwrap(),
+                                        &mut |msg| ide.console_panel.log(msg)
+                                    );
+                                    ide.console_panel.log(
+                                        &format!("Successfully reset to commit {}", commit.hash)
+                                    );
+                                },
+                                Err(e) => ide.console_panel.log(&e),
+                            }
                         }
                     });
+                }
             }
         } else {
             ui.label("No Git repository found in the current project.");
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context, ide: &mut IDE) {
         if !self.show {
             return;
         }
@@ -184,7 +155,7 @@ impl SettingsModal {
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
-                    SettingsTab::Git => self.show_git_settings(ui, ctx),
+                    SettingsTab::Git => self.show_git_settings(ide, ui),
                 }
             });
     }

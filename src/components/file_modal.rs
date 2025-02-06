@@ -491,6 +491,17 @@ impl FileModal {
         }
     }
 
+    pub fn reload_file_system(&mut self) {
+        if let Some(project_path) = &self.project_path {
+            self.file_system = Some(Rc::new(FileSystem::new(
+                project_path.to_str().unwrap()
+            )));
+            // Clear cached folder states
+            self.expanded_folders.clear();
+            self.expanded_folders.insert(project_path.clone());
+        }
+    }
+    
     pub fn open_file(&mut self, file_path: &str, code_editor: &mut CodeEditor) {
         if let Some(fs) = &self.file_system {
             let path = Path::new(file_path);
