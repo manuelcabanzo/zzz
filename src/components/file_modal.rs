@@ -491,6 +491,73 @@ impl FileModal {
         }
     }
 
+    pub fn get_all_file_paths(&self) -> Vec<String> {
+        let mut all_paths = Vec::new();
+        
+        if let (Some(fs), Some(project_path)) = (&self.file_system, &self.project_path) {
+            // Reuse excluded directories from search_files to maintain consistency
+            let excluded_dirs = vec![
+                "build", "target", "out", "bin", "node_modules", ".gradle", "gradle", "captures",
+                ".git", ".svn", ".idea", ".vscode", "app/build", "androidTest", "test", "debug",
+                "release", "shared/build", "commonMain", "androidMain", "iosMain", "__MACOSX",
+                ".DS_Store", "*.xcodeproj", "*.iml",
+            ];
+            
+            // Use a recursive closure to traverse the directory tree
+            fn collect_files(
+                fs: &Rc<FileSystem>,
+                dir: &Path,
+                paths: &mut Vec<String>,
+                excluded_dirs: &[&str]
+            ) {
+                if let Ok(entries) = fs.list_directory(dir) {
+                    for entry in entries {
+                        let path = dir.join(&entry.name);
+                        
+                        if entry.is_dir {
+                            let dir_name = path.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("");
+                                
+                            // Skip excluded directories
+                            if excluded_dirs.iter().any(|&excluded| 
+                                dir_name == excluded || 
+                                dir_name.starts_with(excluded) || 
+                                dir_name.contains(excluded)
+                            ) {
+                                continue;
+                            }
+                            
+                            collect_files(fs, &path, paths, excluded_dirs);
+                        } else {
+                            // Only add files that are likely to be source code or text
+                            let extension = path.extension()
+                                .and_then(|ext| ext.to_str())
+                                .unwrap_or("");
+                                
+                            let is_text_file = matches!(extension, 
+                                "rs" | "ts" | "js" | "py" | "java" | "kt" | "cpp" | "h" | "hpp" |
+                                "c" | "cs" | "go" | "rb" | "php" | "html" | "css" | "json" | "yaml" |
+                                "yml" | "toml" | "md" | "txt" | "xml" | "gradle" | "properties" |
+                                "sh" | "bat" | "cmd" | "ps1" | "sql" | "swift" | "m" | "mm"
+                            );
+                            
+                            if is_text_file {
+                                if let Some(path_str) = path.to_str() {
+                                    paths.push(path_str.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            collect_files(fs, project_path, &mut all_paths, &excluded_dirs);
+        }
+        
+        all_paths
+    }
+    
     pub fn reload_file_system(&mut self) {
         if let Some(project_path) = &self.project_path {
             self.file_system = Some(Rc::new(FileSystem::new(

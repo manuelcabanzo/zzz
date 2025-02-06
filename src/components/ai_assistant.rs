@@ -2,7 +2,7 @@ use eframe::egui;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashSet};
 use chrono::Local;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -12,6 +12,13 @@ struct Message {
     content: String,
     is_user: bool,
     timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ContextFile {
+    path: String,
+    content: String,
+    is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +59,7 @@ pub struct AIAssistant {
     api_key: String,
     input_text: String,
     chat_history: VecDeque<Message>,
+    context_files: Vec<ContextFile>,
     is_loading: bool,
     http_client: Client,
     tx: mpsc::Sender<String>,
@@ -63,7 +71,11 @@ pub struct AIAssistant {
     runtime: Arc<Runtime>,
     last_ai_response: Option<String>,
     model: String,
+    show_file_selector: bool,
+    available_files: Vec<String>,
+    selected_files: HashSet<String>,
 }
+
 
 impl AIAssistant {
     const MAX_RETRIES: u32 = 3;
@@ -78,6 +90,7 @@ impl AIAssistant {
             api_key,
             input_text: String::new(),
             chat_history: VecDeque::with_capacity(Self::MAX_CHAT_HISTORY),
+            context_files: Vec::new(),
             is_loading: false,
             http_client: Client::new(),
             tx,
@@ -89,6 +102,9 @@ impl AIAssistant {
             runtime,
             last_ai_response: None,
             model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
+            show_file_selector: false,
+            available_files: Vec::new(),
+            selected_files: HashSet::new(),
         }
     }
 
@@ -96,30 +112,47 @@ impl AIAssistant {
         self.model = new_model;
     }
 
-    fn format_chat_messages(&self, file_content: &str, question: &str) -> Vec<ChatMessage> {
+    pub fn update_available_files(&mut self, file_paths: Vec<String>) {
+        self.available_files = file_paths;
+    }
+
+    fn format_chat_messages(&self, file_content: &str, current_question: &str) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
         
+        // Create a comprehensive system message with all active context files and current file
+        let mut context_content = self.context_files
+            .iter()
+            .filter(|f| f.is_active)
+            .map(|f| format!("File: {}\n```\n{}\n```", f.path, f.content))
+            .collect::<Vec<_>>();
+        
+        // Add current file content if provided
+        if !file_content.is_empty() {
+            context_content.push(format!("Current File:\n```\n{}\n```", file_content));
+        }
+    
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: format!(
-                "You are an AI programming assistant in an IDE. You have access to the current file content:\n```\n{}\n```\n\
-                Be direct and concise. Focus on practical solutions.",
-                file_content
+                "You are an AI programming assistant in an IDE. You have access to the following files:\n\n{}",
+                context_content.join("\n\n")
             ),
         });
-
+    
+        // Add conversation history
         for msg in self.chat_history.iter().take(self.context_window) {
             messages.push(ChatMessage {
                 role: if msg.is_user { "user" } else { "assistant" }.to_string(),
                 content: msg.content.clone(),
             });
         }
-
+    
+        // Add the current question
         messages.push(ChatMessage {
             role: "user".to_string(),
-            content: question.to_string(),
+            content: current_question.to_string(),
         });
-
+    
         messages
     }
 
@@ -369,9 +402,6 @@ impl AIAssistant {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, code_editor: &mut super::code_editor::CodeEditor) {
-        let available_height = ui.available_height();
-        self.panel_height = available_height;
-    
         if !self.is_api_key_valid() {
             ui.colored_label(
                 egui::Color32::RED, 
@@ -379,56 +409,125 @@ impl AIAssistant {
             );
             return;
         }
-        
+
         egui::Frame::none()
             .fill(ui.style().visuals.window_fill())
             .show(ui, |ui| {
                 ui.vertical(|ui| {
+                    // Header
                     ui.heading("AI Assistant");
                     ui.add_space(8.0);
-                    
-                    egui::CollapsingHeader::new("Debug Info")
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            ui.label(format!("API Key length: {}", self.api_key.len()));
-                            ui.label(format!("Is loading: {}", self.is_loading));
-                            ui.label(format!("Chat history length: {}", self.chat_history.len()));
+
+                    // File Selection UI
+                    if ui.button("Manage Context Files").clicked() {
+                        self.show_file_selector = !self.show_file_selector;
+                    }
+
+                    if self.show_file_selector {
+                        self.show_file_selector_ui(ui);
+                    }
+
+                    // Active Context Files Display
+                    if !self.context_files.is_empty() {
+                        ui.collapsing("Active Context Files", |ui| {
+                            // Create a vector to store indices of files to remove
+                            let mut to_remove = Vec::new();
                             
-                            ui.label("Recent debug messages:");
-                            for msg in &self.debug_messages {
-                                ui.label(msg);
+                            for (index, file) in self.context_files.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut file.is_active, "");
+                                    ui.label(&file.path);
+                                    if ui.small_button("×").clicked() {
+                                        // Mark this index for removal
+                                        to_remove.push(index);
+                                        // Remove from selected_files as well
+                                        self.selected_files.remove(&file.path);
+                                        println!("Removing file from context: {}", file.path);
+                                    }
+                                });
+                            }
+                            
+                            // Remove marked files in reverse order to maintain correct indices
+                            for &index in to_remove.iter().rev() {
+                                self.context_files.remove(index);
                             }
                         });
-    
-                    if self.api_key.is_empty() {
-                        ui.colored_label(
-                            egui::Color32::RED, 
-                            "Please configure your Together AI API key in Settings"
-                        );
-                        return;
                     }
-    
+
                     ui.add_space(8.0);
-    
+                    
+                    // Chat History
                     self.render_chat_history(ui);
-    
+                    
                     ui.add_space(8.0);
-    
+                    
+                    // Input Area
                     self.render_input_area(ui, code_editor);
+                });
+            });
+
+        // Process incoming messages
+        while let Ok(response) = self.rx.try_recv() {
+            if response.starts_with("Error") || 
+               response.starts_with("Network error") || 
+               response.starts_with("API error") 
+            {
+                self.add_debug_message(response.clone());
+            }
+            
+            self.last_ai_response = Some(response.clone());
+            self.add_message(response, false);
+            self.is_loading = false;
+        }
+    }
     
-                    while let Ok(response) = self.rx.try_recv() {
-                        if response.starts_with("Error") || 
-                           response.starts_with("Network error") || 
-                           response.starts_with("API error") 
-                        {
-                            self.add_debug_message(response.clone());
-                        }
-                        
-                        self.last_ai_response = Some(response.clone());
-                        
-                        self.add_message(response.clone(), false);
-                        self.is_loading = false;
-                    }
+    fn show_file_selector_ui(&mut self, ui: &mut egui::Ui) {
+        // Add debug prints to see what files are available
+        println!("Available files: {:?}", self.available_files);
+        println!("Currently selected files: {:?}", self.selected_files);
+    
+        egui::Window::new("Select Context Files")
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                ui.vertical(|ui| {
+                    // Show the count of available files
+                    ui.label(format!("Total files available: {}", self.available_files.len()));
+                    
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            for file_path in &self.available_files {
+                                let mut is_selected = self.selected_files.contains(file_path);
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut is_selected, "").changed() {
+                                        println!("Checkbox clicked for file: {}", file_path);
+                                        if is_selected {
+                                            println!("Adding file to selected files: {}", file_path);
+                                            self.selected_files.insert(file_path.clone());
+                                            // Add to context files if not already present
+                                            if !self.context_files.iter().any(|f| f.path == *file_path) {
+                                                println!("Adding new context file: {}", file_path);
+                                                self.context_files.push(ContextFile {
+                                                    path: file_path.clone(),
+                                                    content: String::new(), // Content should be loaded here
+                                                    is_active: true,
+                                                });
+                                            }
+                                        } else {
+                                            println!("Removing file from selected files: {}", file_path);
+                                            self.selected_files.remove(file_path);
+                                            self.context_files.retain(|f| f.path != *file_path);
+                                        }
+                                    }
+                                    ui.label(file_path);
+                                });
+                            }
+                        });
+                    
+                    // Add debug information at the bottom
+                    ui.separator();
+                    ui.label(format!("Selected files count: {}", self.selected_files.len()));
+                    ui.label(format!("Context files count: {}", self.context_files.len()));
                 });
             });
     }

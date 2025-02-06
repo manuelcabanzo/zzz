@@ -329,6 +329,9 @@ impl IDE {
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
         self.extension_manager.process_commands(&mut self.console_panel);
 
+        let file_paths = self.file_modal.get_all_file_paths();
+        self.ai_assistant.update_available_files(file_paths);
+
         if self.show_ai_panel {
             egui::SidePanel::right("ai_panel")
                 .default_width(350.0)
