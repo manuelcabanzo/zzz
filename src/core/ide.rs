@@ -6,6 +6,7 @@ use crate::components::{
     emulator_panel::EmulatorPanel,
     settings_modal::SettingsModal,
     ai_assistant::AIAssistant,
+    git_modal::GitModal,
 };
 use crate::core::app_state::AppState;
 use tokio::sync::oneshot;
@@ -40,6 +41,7 @@ pub struct IDE {
     pub search_focus_requested: bool,
     pub ai_model: String,
     pub extension_manager: ExtensionManager,
+    pub git_modal: GitModal,
 }
 
 impl IDE {
@@ -80,6 +82,7 @@ impl IDE {
             search_focus_requested: false,
             ai_model: state.ai_model.clone(),
             extension_manager: ExtensionManager::new(state.clone()),
+            git_modal: GitModal::new(),
         };
 
         let _guard = tokio_runtime.enter();
@@ -91,11 +94,9 @@ impl IDE {
             match git_manager.initialize() {
                 Ok(_) => {
                     ide.console_panel.log("Git repository initialized successfully");
-                    ide.settings_modal.update_git_manager(Some(project_path.clone()));
                 },
                 Err(e) => {
                     ide.console_panel.log(&format!("Git initialization error: {}", e));
-                    ide.settings_modal.update_git_manager(None);
                 }
             }
         }
@@ -156,6 +157,12 @@ impl IDE {
                     self.search_query = String::new();
                     self.search_results = Vec::new();
                     self.search_focus_requested = true;
+                }
+            }
+            if i.key_pressed(egui::Key::G) && i.modifiers.ctrl {
+                self.git_modal.show = !self.git_modal.show;
+                if self.git_modal.show {
+                    self.git_modal.update_git_manager(self.file_modal.project_path.clone());
                 }
             }
             if i.key_pressed(egui::Key::Escape) {
@@ -317,12 +324,6 @@ impl IDE {
             }
         }
 
-        if let Some(project_path) = &self.file_modal.project_path {
-            if self.settings_modal.show {
-                self.settings_modal.update_git_manager(Some(project_path.clone()));
-            }
-        }
-
         show_search_modal(self, ctx);
         self.console_panel.update(ctx);
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg), &mut self.ai_assistant);
@@ -385,9 +386,14 @@ impl IDE {
                 });
         }
 
-        let mut settings_modal = self.settings_modal.clone();
-        settings_modal.show(ctx, self);
+        self.settings_modal.show(ctx);
         self.show_file_search_modal(ctx);
+        self.git_modal.show(
+            ctx,
+            &mut self.file_modal,
+            &mut self.code_editor,
+            &mut self.console_panel
+        );    
     }
 }
 

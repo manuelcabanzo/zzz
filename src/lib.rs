@@ -20,4 +20,5 @@ pub mod components {
     pub mod emulator_panel;
     pub mod settings_modal;
     pub mod ai_assistant;
+    pub mod git_modal;
 }

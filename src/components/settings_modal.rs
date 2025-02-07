@@ -1,12 +1,10 @@
-use std::path::PathBuf;
 use eframe::egui;
-use crate::{core::{git_manager::{GitCommit, GitManager}, ide::IDE}, utils::themes::{custom_theme, Theme}};
+use crate::utils::themes::{custom_theme, Theme};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
     Personalization,
     AI,
-    Git,
 }
 
 #[derive(Clone)]
@@ -18,11 +16,8 @@ pub struct SettingsModal {
     api_key_changed: bool, // Track if API key has changed
     ai_model: String, // Add field for AI model
     ai_model_changed: bool, // Track if AI model has changed
-    git_manager: Option<GitManager>,
-    commits: Vec<GitCommit>,
-    selected_commit: Option<String>,
 }
-    
+
 impl SettingsModal {
     pub fn new() -> Self {
         Self {
@@ -33,9 +28,6 @@ impl SettingsModal {
             api_key_changed: false,
             ai_model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
             ai_model_changed: false,
-            git_manager: None,
-            commits: Vec::new(),
-            selected_commit: None,
         }
     }
 
@@ -73,65 +65,7 @@ impl SettingsModal {
         changed
     }
 
-    pub fn update_git_manager(&mut self, project_path: Option<PathBuf>) {
-        self.commits.clear();
-        self.git_manager = None;
-        if let Some(path) = project_path {
-            println!("Updating git manager for path: {}", path.display()); // Add this
-            let git_manager = GitManager::new(path.clone());
-
-            if !git_manager.is_git_repo() {
-                println!("Path is not a git repository: {}", path.display()); // Add this
-                return;
-            }
-            match git_manager.get_commits() {
-                Ok(commits) => {
-                    println!("Found {} commits", commits.len()); // Add this
-                    self.commits = commits;
-                    self.git_manager = Some(git_manager);
-                },
-                Err(e) => {
-                    println!("Error getting commits: {}", e); // Add this
-                    self.commits.clear();
-                }
-            }
-        }
-    }
-
-    fn show_git_settings(&mut self, ide: &mut IDE, ui: &mut egui::Ui) {
-        ui.heading("Git History");
-        ui.add_space(10.0);
-        if let Some(git_manager) = &self.git_manager {
-            if let Ok(commits) = git_manager.get_commits() {
-                for commit in commits {
-                    ui.horizontal(|ui| {
-                        ui.label(&commit.hash);
-                        if ui.button("Reset to This Commit").clicked() {
-                            match git_manager.reset_to_commit(&commit.hash) {
-                                Ok(()) => {
-                                    // Force reload of filesystem
-                                    ide.file_modal.reload_file_system();
-                                    // Reload all open buffers
-                                    ide.code_editor.reload_all_buffers(
-                                        &ide.file_modal.file_system.as_ref().unwrap(),
-                                        &mut |msg| ide.console_panel.log(msg)
-                                    );
-                                    ide.console_panel.log(
-                                        &format!("Successfully reset to commit {}", commit.hash)
-                                    );
-                                },
-                                Err(e) => ide.console_panel.log(&e),
-                            }
-                        }
-                    });
-                }
-            }
-        } else {
-            ui.label("No Git repository found in the current project.");
-        }
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context, ide: &mut IDE) {
+    pub fn show(&mut self, ctx: &egui::Context) {
         if !self.show {
             return;
         }
@@ -150,12 +84,10 @@ impl SettingsModal {
                         "Personalization"
                     );
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant");
-                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Git, "Git");
                 });
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
-                    SettingsTab::Git => self.show_git_settings(ide, ui),
                 }
             });
     }
