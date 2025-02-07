@@ -17,7 +17,6 @@ impl AppConstants {
 
     fn load_icon() -> Arc<IconData> {
         let icon_data = include_bytes!("../resources/icons/app.png");
-        println!("Loaded icon size: {} bytes", icon_data.len());
 
         let img = load_from_memory(icon_data)
             .expect("Failed to load embedded icon");

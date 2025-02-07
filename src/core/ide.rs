@@ -82,7 +82,7 @@ impl IDE {
             search_focus_requested: false,
             ai_model: state.ai_model.clone(),
             extension_manager: ExtensionManager::new(state.clone()),
-            git_modal: GitModal::new(),
+            git_modal: GitModal::new(tokio_runtime.clone()),
         };
 
         let _guard = tokio_runtime.enter();
