@@ -62,26 +62,31 @@ impl GitModal {
                 ui.add_space(10.0);
                 if let Some(git_manager) = &self.git_manager {
                     if let Ok(commits) = git_manager.get_commits() {
-                        for commit in commits {
-                            ui.horizontal(|ui| {
-                                ui.label(&commit.hash);
-                                if ui.button("Reset to This Commit").clicked() {
-                                    match git_manager.reset_to_commit(&commit.hash) {
-                                        Ok(()) => {
-                                            file_modal.reload_file_system();
-                                            code_editor.reload_all_buffers(
-                                                &file_modal.file_system.as_ref().unwrap(),
-                                                &mut |msg| console_panel.log(msg)
-                                            );
-                                            console_panel.log(
-                                                &format!("Successfully reset to commit {}", commit.hash)
-                                            );
-                                        },
-                                        Err(e) => console_panel.log(&e),
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for commit in commits {
+                                ui.group(|ui| {
+                                    ui.label(format!("Message: {}", commit.message));
+                                    ui.label(format!("Author: {}", commit.author));
+                                    ui.label(format!("Date: {}", commit.date.format("%Y-%m-%d %H:%M:%S")));
+                                    if ui.button("Reset to This Commit").clicked() {
+                                        match git_manager.reset_to_commit(&commit.hash) {
+                                            Ok(()) => {
+                                                file_modal.reload_file_system();
+                                                code_editor.reload_all_buffers(
+                                                    &file_modal.file_system.as_ref().unwrap(),
+                                                    &mut |msg| console_panel.log(msg)
+                                                );
+                                                console_panel.log(
+                                                    &format!("Successfully reset to commit {}", commit.hash)
+                                                );
+                                            },
+                                            Err(e) => console_panel.log(&e),
+                                        }
                                     }
-                                }
-                            });
-                        }
+                                });
+                                ui.add_space(10.0);
+                            }
+                        });
                     }
                 } else {
                     ui.label("No Git repository found in the current project.");

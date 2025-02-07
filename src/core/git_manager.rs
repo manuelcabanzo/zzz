@@ -35,22 +35,13 @@ impl GitManager {
         let git_dir = self.repo_path.join(".git");
         let direct_check = git_dir.exists() && git_dir.is_dir();
 
-        println!("Checking git repo at: {}", self.repo_path.display());
-        println!("Direct check: {}", direct_check);
-
         if direct_check {
             return true;
         }
 
         match Self::run_git_command(&["rev-parse", "--git-dir"], &self.repo_path) {
-            Ok(output) => {
-                println!("Git rev-parse output: {:?}", output);
-                output.status.success()
-            }
-            Err(e) => {
-                println!("Git command execution error: {}", e);
-                false
-            }
+            Ok(output) => output.status.success(),
+            Err(_) => false,
         }
     }
 
