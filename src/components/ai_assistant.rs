@@ -242,7 +242,7 @@ impl AIAssistant {
 
     fn render_chat_history(&self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
-            .max_height(self.panel_height - 200.0)
+            .max_height(self.panel_height)
             .min_scrolled_height(200.0)
             .auto_shrink([false; 2])
             .stick_to_bottom(self.scroll_to_bottom)
