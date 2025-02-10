@@ -1,10 +1,14 @@
 use eframe::egui;
 use crate::utils::themes::{custom_theme, Theme};
+use crate::core::app_creation::AppCreation;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
     Personalization,
     AI,
+    AppCreation, // Add new tab for app creation
 }
 
 #[derive(Clone)]
@@ -16,6 +20,11 @@ pub struct SettingsModal {
     api_key_changed: bool, // Track if API key has changed
     ai_model: String, // Add field for AI model
     ai_model_changed: bool, // Track if AI model has changed
+    app_name: String, // Add field for app name
+    app_path: String, // Add field for app path
+    api_level: String, // Add field for API level
+    logs: Arc<Mutex<Vec<String>>>, // Add field for logs
+    progress: Arc<Mutex<f32>>, // Add field for progress
 }
 
 impl SettingsModal {
@@ -28,6 +37,11 @@ impl SettingsModal {
             api_key_changed: false,
             ai_model: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
             ai_model_changed: false,
+            app_name: String::new(),
+            app_path: String::new(),
+            api_level: "30".to_string(), // Default API level
+            logs: Arc::new(Mutex::new(Vec::new())), // Initialize logs
+            progress: Arc::new(Mutex::new(0.0)), // Initialize progress
         }
     }
 
@@ -84,10 +98,12 @@ impl SettingsModal {
                         "Personalization"
                     );
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant");
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::AppCreation, "App Creation"); // Add new tab
                 });
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
+                    SettingsTab::AppCreation => self.show_app_creation_settings(ui), // Show app creation settings
                 }
             });
     }
@@ -154,6 +170,59 @@ impl SettingsModal {
         if ui.button("Purple Theme").clicked() {
             self.current_theme = Theme::purple();
             self.apply_theme(ctx);
+        }
+    }
+
+    fn show_app_creation_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("App Creation");
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.label("App Name:");
+            ui.text_edit_singleline(&mut self.app_name);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("App Path:");
+            ui.text_edit_singleline(&mut self.app_path);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("API Level:");
+            ui.text_edit_singleline(&mut self.api_level);
+        });
+
+        if ui.button("Create App").clicked() {
+            let logs_callback = {
+                let logs = self.logs.clone();
+                Rc::new(move |log: String| {
+                    let mut logs = logs.lock().unwrap();
+                    logs.push(log);
+                }) as Rc<dyn Fn(String)>
+            };
+
+            let progress_callback = {
+                let progress = self.progress.clone();
+                Rc::new(move |p: f32| {
+                    let mut progress = progress.lock().unwrap();
+                    *progress = p;
+                }) as Rc<dyn Fn(f32)>
+            };
+
+            let app_creation = AppCreation::new(self.app_name.clone(), self.app_path.clone(), self.api_level.clone(), logs_callback, progress_callback);
+            if let Err(e) = app_creation.create_app() {
+                ui.label(format!("Failed to create app: {}", e));
+            }
+        }
+
+        // Display progress bar
+        let progress = self.progress.lock().unwrap();
+        ui.add(egui::ProgressBar::new(*progress).show_percentage());
+
+        // Display logs
+        let logs = self.logs.lock().unwrap();
+        for log in logs.iter() {
+            ui.label(log);
         }
     }
 

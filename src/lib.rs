@@ -7,6 +7,9 @@ pub mod core {
     pub mod search;
     pub mod extension;
     pub mod constants;
+    pub mod app_creation;
+    pub mod downloader;
+    pub mod android_resources;
 }
 
 pub mod utils {
