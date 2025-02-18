@@ -5,7 +5,6 @@ pub mod core {
     pub mod app_state;
     pub mod git_manager;
     pub mod search;
-    pub mod extension;
     pub mod constants;
     pub mod app_creation;
     pub mod downloader;
@@ -25,3 +24,7 @@ pub mod components {
     pub mod ai_assistant;
     pub mod git_modal;
 }
+
+pub mod plugin_manager;
+pub mod plugin_loader;
+pub mod plugin_interface;

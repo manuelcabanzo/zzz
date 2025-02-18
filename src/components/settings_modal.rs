@@ -1,6 +1,7 @@
 use eframe::egui;
 use crate::utils::themes::{custom_theme, Theme};
 use crate::core::app_creation::AppCreation;
+use crate::plugin_manager::PluginManager;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +10,7 @@ pub enum SettingsTab {
     Personalization,
     AI,
     AppCreation, // Add new tab for app creation
+    Extensions, // Add new tab for extensions
 }
 
 #[derive(Clone)]
@@ -25,10 +27,11 @@ pub struct SettingsModal {
     api_level: String, // Add field for API level
     logs: Arc<Mutex<Vec<String>>>, // Add field for logs
     progress: Arc<Mutex<f32>>, // Add field for progress
+    plugin_manager: Arc<Mutex<PluginManager>>, // Add field for plugin manager
 }
 
 impl SettingsModal {
-    pub fn new() -> Self {
+    pub fn new(plugin_manager: Arc<Mutex<PluginManager>>) -> Self {
         Self {
             show: false,
             settings_tab: SettingsTab::Personalization,
@@ -42,6 +45,7 @@ impl SettingsModal {
             api_level: "30".to_string(), // Default API level
             logs: Arc::new(Mutex::new(Vec::new())), // Initialize logs
             progress: Arc::new(Mutex::new(0.0)), // Initialize progress
+            plugin_manager,
         }
     }
 
@@ -99,11 +103,13 @@ impl SettingsModal {
                     );
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::AI, "AI Assistant");
                     ui.selectable_value(&mut self.settings_tab, SettingsTab::AppCreation, "App Creation"); // Add new tab
+                    ui.selectable_value(&mut self.settings_tab, SettingsTab::Extensions, "Extensions"); // Add new tab
                 });
                 match self.settings_tab {
                     SettingsTab::Personalization => self.show_personalization_settings(ui, ctx),
                     SettingsTab::AI => self.show_ai_settings(ui),
                     SettingsTab::AppCreation => self.show_app_creation_settings(ui), // Show app creation settings
+                    SettingsTab::Extensions => self.show_extension_settings(ui), // Show extension settings
                 }
             });
     }
@@ -223,6 +229,27 @@ impl SettingsModal {
         let logs = self.logs.lock().unwrap();
         for log in logs.iter() {
             ui.label(log);
+        }
+    }
+
+    fn show_extension_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Extensions");
+        ui.add_space(10.0);
+
+        if ui.button("Load Extension").clicked() {
+            // Open file picker dialog to select the plugin file
+            if let Some(plugin_path) = self.file_modal.pick_file() {
+                println!("Loading plugin from path: {:?}", plugin_path.display());
+                let mut plugin_manager = self.plugin_manager.lock().unwrap();
+                plugin_manager.install_plugin(&plugin_path);
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.label("Loaded Extensions:");
+        let plugin_manager = self.plugin_manager.lock().unwrap();
+        for plugin in plugin_manager.list_plugins() {
+            ui.label(plugin);
         }
     }
 

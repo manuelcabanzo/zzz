@@ -2,7 +2,6 @@ use eframe::egui;
 use eframe::HardwareAcceleration;
 use zzz::core::constants::AppConstants;
 
-
 fn main() -> eframe::Result<()> {
     // Load application constants and embedded resources
     let constants = AppConstants::load();

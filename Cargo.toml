@@ -37,6 +37,7 @@ rayon = "1.10.0"
 lru = "0.13.0"
 tempfile = "3.16.0"
 zip = "2.2.2"
+libloading = "0.8.6"
 
 [lib]
 name = "zzz"

@@ -11,10 +11,10 @@ use crate::components::{
 use crate::core::app_state::AppState;
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use super::git_manager::GitManager;
 use super::search::{show_search_modal, SearchResult};
-use crate::core::extension::ExtensionManager;
+use crate::plugin_manager::PluginManager;
 
 pub struct IDE {
     pub file_modal: FileModal,
@@ -40,8 +40,8 @@ pub struct IDE {
     pub search_highlight_text: Option<String>,
     pub search_focus_requested: bool,
     pub ai_model: String,
-    pub extension_manager: ExtensionManager,
     pub git_modal: GitModal,
+    pub plugin_manager: Arc<Mutex<PluginManager>>,
 }
 
 impl IDE {
@@ -57,12 +57,16 @@ impl IDE {
             eprintln!("Failed to load logo: {}", err);
         }
 
+        let plugin_manager = PluginManager::new();
+        let plugin_manager_arc = Arc::new(Mutex::new(plugin_manager));
+        let file_modal = FileModal::new();
+
         let mut ide = Self {
-            file_modal: FileModal::new(),
+            file_modal: file_modal,
             code_editor,
             console_panel: ConsolePanel::new(),
             emulator_panel,
-            settings_modal: SettingsModal::new(),
+            settings_modal: SettingsModal::new(plugin_manager_arc.clone()),
             show_console_panel: state.console_panel_visible,
             show_emulator_panel: state.emulator_panel_visible,
             show_ai_panel: state.ai_assistant_panel_visible,
@@ -81,8 +85,8 @@ impl IDE {
             search_highlight_text: None,
             search_focus_requested: false,
             ai_model: state.ai_model.clone(),
-            extension_manager: ExtensionManager::new(state.clone()),
             git_modal: GitModal::new(tokio_runtime.clone()),
+            plugin_manager: plugin_manager_arc.clone(),
         };
 
         let _guard = tokio_runtime.enter();
@@ -103,6 +107,7 @@ impl IDE {
         state.apply_to_ide(&mut ide);
         ide.settings_modal.apply_theme(&cc.egui_ctx);
         ide.load_extensions();
+        ide.load_plugins();
 
         ide
     }
@@ -111,6 +116,12 @@ impl IDE {
         // Add logic to discover and load extensions from filesystem
         // Example manual load:
         // self.extension_manager.load_extension(Box::new(ExampleExtension));
+    }
+
+    fn load_plugins(&mut self) {
+        // Add logic to discover and load plugins from filesystem
+        // Example manual load:
+        // self.plugin_manager.install_plugin(Path::new("path/to/plugin"));
     }
 
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, _ui: &mut egui::Ui) {
@@ -328,7 +339,6 @@ impl IDE {
         self.console_panel.update(ctx);
         self.file_modal.show(ctx, &mut self.code_editor, &mut |msg| self.console_panel.log(msg), &mut self.ai_assistant);
         self.emulator_panel.update_from_file_modal(self.file_modal.project_path.clone());
-        self.extension_manager.process_commands(&mut self.console_panel);
 
         if self.show_ai_panel {
             egui::SidePanel::right("ai_panel")
