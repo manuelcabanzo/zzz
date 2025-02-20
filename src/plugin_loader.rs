@@ -3,7 +3,7 @@ use libloading::{Library, Symbol};
 use crate::plugin_interface::Plugin;
 
 pub struct PluginLoader {
-    plugins: Vec<Box<dyn Plugin>>,
+    plugins: Vec<*mut dyn Plugin>,
     libraries: Vec<Library>,
 }
 
@@ -19,14 +19,24 @@ impl PluginLoader {
         unsafe {
             match Library::new(plugin_path) {
                 Ok(lib) => {
-                    self.libraries.push(lib);
-                    let plugin: Symbol<fn() -> Box<dyn Plugin>> = self.libraries.last().unwrap().get(b"create_plugin").expect("Failed to load symbol");
+                    let plugin: Symbol<fn() -> *mut dyn Plugin> = match lib.get(b"create_plugin") {
+                        Ok(symbol) => symbol,
+                        Err(e) => {
+                            eprintln!("Failed to load symbol 'create_plugin': {:?}", e);
+                            return;
+                        }
+                    };
                     let plugin_instance = plugin();
-                    plugin_instance.activate();
+                    if plugin_instance.is_null() {
+                        eprintln!("Failed to create plugin instance");
+                        return;
+                    }
+                    (*plugin_instance).activate();
                     self.plugins.push(plugin_instance);
+                    self.libraries.push(lib);
                 }
                 Err(e) => {
-                    eprintln!("Failed to load plugin: {:?}", e);
+                    eprintln!("Failed to load plugin library: {:?}", e);
                     return;
                 }
             }
@@ -34,14 +44,17 @@ impl PluginLoader {
     }
 
     pub fn unload_plugin(&mut self, plugin_name: &str) {
-        if let Some(index) = self.plugins.iter().position(|p| p.name() == plugin_name) {
-            self.plugins[index].deactivate();
+        if let Some(index) = self.plugins.iter().position(|&p| unsafe { (*p).name() == plugin_name }) {
+            unsafe {
+                (*self.plugins[index]).deactivate();
+                let _ = Box::from_raw(self.plugins[index]);
+            }
             self.plugins.remove(index);
             self.libraries.remove(index);
         }
     }
 
     pub fn list_plugins(&self) -> Vec<String> {
-        self.plugins.iter().map(|p| p.name().to_string()).collect()
+        self.plugins.iter().map(|&p| unsafe { (*p).name().to_string() }).collect()
     }
 }

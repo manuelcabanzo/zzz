@@ -12,6 +12,8 @@ use crate::core::app_state::AppState;
 use tokio::sync::oneshot;
 use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::fs;
 use super::git_manager::GitManager;
 use super::search::{show_search_modal, SearchResult};
 use crate::plugin_manager::PluginManager;
@@ -114,14 +116,36 @@ impl IDE {
 
     fn load_extensions(&mut self) {
         // Add logic to discover and load extensions from filesystem
-        // Example manual load:
-        // self.extension_manager.load_extension(Box::new(ExampleExtension));
+        let extensions_dir = Path::new("extensions");
+        if extensions_dir.exists() && extensions_dir.is_dir() {
+            for entry in fs::read_dir(extensions_dir).expect("Failed to read extensions directory") {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        // Load the extension
+                        // self.extension_manager.load_extension(Box::new(ExampleExtension));
+                        println!("Loaded extension from path: {:?}", path);
+                    }
+                }
+            }
+        }
     }
 
     fn load_plugins(&mut self) {
         // Add logic to discover and load plugins from filesystem
-        // Example manual load:
-        // self.plugin_manager.install_plugin(Path::new("path/to/plugin"));
+        let plugins_dir = Path::new("plugins");
+        if plugins_dir.exists() && plugins_dir.is_dir() {
+            for entry in fs::read_dir(plugins_dir).expect("Failed to read plugins directory") {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        // Load the plugin
+                        self.plugin_manager.lock().unwrap().install_plugin(&path);
+                        println!("Loaded plugin from path: {:?}", path);
+                    }
+                }
+            }
+        }
     }
 
     fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context, _ui: &mut egui::Ui) {

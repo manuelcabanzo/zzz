@@ -4,6 +4,7 @@ use crate::core::app_creation::AppCreation;
 use crate::plugin_manager::PluginManager;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use rfd::FileDialog;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
@@ -238,7 +239,7 @@ impl SettingsModal {
 
         if ui.button("Load Extension").clicked() {
             // Open file picker dialog to select the plugin file
-            if let Some(plugin_path) = self.file_modal.pick_file() {
+            if let Some(plugin_path) = FileDialog::new().pick_file() {
                 println!("Loading plugin from path: {:?}", plugin_path.display());
                 let mut plugin_manager = self.plugin_manager.lock().unwrap();
                 plugin_manager.install_plugin(&plugin_path);

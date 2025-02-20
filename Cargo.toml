@@ -12,7 +12,7 @@ log = "0.4.22"
 serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.128"
 chrono = { version = "0.4.38", features = ["serde"] }
-rfd = "0.14.1"
+rfd = "0.14"
 crossterm = "0.28.1"
 tokio = { version = "1.40.0", features = ["full"] }
 tokio-util = { version = "0.7.13", features = ["codec"] }
