@@ -241,8 +241,15 @@ impl SettingsModal {
             // Open file picker dialog to select the plugin file
             if let Some(plugin_path) = FileDialog::new().pick_file() {
                 println!("Loading plugin from path: {:?}", plugin_path.display());
-                let mut plugin_manager = self.plugin_manager.lock().unwrap();
-                plugin_manager.install_plugin(&plugin_path);
+                let plugin_manager = self.plugin_manager.lock().unwrap();
+                match plugin_manager.install_plugin(&plugin_path) {
+                    Ok(_) => {
+                        println!("Plugin loaded successfully!");
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to load plugin: {}", e);
+                    }
+                }
             }
         }
 

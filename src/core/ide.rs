@@ -140,8 +140,11 @@ impl IDE {
                     let path = entry.path();
                     if path.is_file() {
                         // Load the plugin
-                        self.plugin_manager.lock().unwrap().install_plugin(&path);
-                        println!("Loaded plugin from path: {:?}", path);
+                        if let Err(e) = self.plugin_manager.lock().unwrap().install_plugin(&path) {
+                            eprintln!("Failed to load plugin from path {:?}: {}", path, e);
+                        } else {
+                            println!("Loaded plugin from path: {:?}", path);
+                        }
                     }
                 }
             }
@@ -342,7 +345,6 @@ impl IDE {
 
         self.code_editor.clear_expired_highlights();
 
-
         ctx.data_mut(|data| {
             let frame_count = data.get_temp::<u32>(egui::Id::new("frame_count")).unwrap_or(0);
             let should_update = frame_count % 3 == 0;
@@ -427,7 +429,7 @@ impl IDE {
             &mut self.file_modal,
             &mut self.code_editor,
             &mut self.console_panel
-        );    
+        );   
     }
 }
 
