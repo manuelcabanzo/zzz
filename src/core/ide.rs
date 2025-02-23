@@ -140,11 +140,7 @@ impl IDE {
                     let path = entry.path();
                     if path.is_file() {
                         // Load the plugin
-                        if let Err(e) = self.plugin_manager.lock().unwrap().install_plugin(&path) {
-                            eprintln!("Failed to load plugin from path {:?}: {}", path, e);
-                        } else {
-                            println!("Loaded plugin from path: {:?}", path);
-                        }
+                        self.plugin_manager.lock().unwrap().load_plugin(&path);
                     }
                 }
             }
@@ -420,6 +416,12 @@ impl IDE {
                 .show(ctx, |ui| {
                     self.console_panel.show(ui);
                 });
+        }
+
+        // Check for plugin loading errors
+        if let Some(error) = self.plugin_manager.lock().unwrap().check_errors() {
+            eprintln!("Plugin loading error: {}", error);
+            self.console_panel.log(&format!("Plugin loading error: {}", error));
         }
 
         self.settings_modal.show(ctx);

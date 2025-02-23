@@ -27,4 +27,4 @@ pub mod components {
 
 pub mod plugin_manager;
 pub mod plugin_loader;
-pub mod plugin_interface;
+pub mod plugin_exports;
