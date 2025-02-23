@@ -42,7 +42,7 @@ impl PluginManager {
     }
 
     pub fn check_errors(&self) -> Option<String> {
-        let loader = self.loader.lock().unwrap();
+        let mut loader = self.loader.lock().unwrap();
         loader.check_errors()
     }
 }

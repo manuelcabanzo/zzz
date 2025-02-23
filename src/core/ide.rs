@@ -109,7 +109,6 @@ impl IDE {
         state.apply_to_ide(&mut ide);
         ide.settings_modal.apply_theme(&cc.egui_ctx);
         ide.load_extensions();
-        ide.load_plugins();
 
         ide
     }
@@ -125,22 +124,6 @@ impl IDE {
                         // Load the extension
                         // self.extension_manager.load_extension(Box::new(ExampleExtension));
                         println!("Loaded extension from path: {:?}", path);
-                    }
-                }
-            }
-        }
-    }
-
-    fn load_plugins(&mut self) {
-        // Add logic to discover and load plugins from filesystem
-        let plugins_dir = Path::new("plugins");
-        if plugins_dir.exists() && plugins_dir.is_dir() {
-            for entry in fs::read_dir(plugins_dir).expect("Failed to read plugins directory") {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() {
-                        // Load the plugin
-                        self.plugin_manager.lock().unwrap().load_plugin(&path);
                     }
                 }
             }

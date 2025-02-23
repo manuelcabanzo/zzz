@@ -2,6 +2,7 @@ use std::any::Any;
 
 // The C-compatible wrapper struct
 #[repr(C)]
+#[derive(Clone)]
 pub struct PluginWrapper {
     name: String,
     version: String,
@@ -52,8 +53,6 @@ impl Plugin for PluginWrapper {
     }
 
     fn activate(&self) {
-        // In a real implementation, you might want to use interior mutability 
-        // (e.g., Mutex or RefCell) to modify the activated state
         println!("Activating plugin: {}", self.name);
     }
 
@@ -66,10 +65,6 @@ impl Plugin for PluginWrapper {
     }
 
     fn clone_box(&self) -> Box<dyn Plugin> {
-        Box::new(Self {
-            name: self.name.clone(),
-            version: self.version.clone(),
-            activated: self.activated,
-        })
+        Box::new(self.clone())
     }
 }
