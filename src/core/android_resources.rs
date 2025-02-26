@@ -20,7 +20,7 @@ impl AndroidResources {
             .expect("Failed to get project directories");
         let resources_path = project_dirs.config_dir().join("android_resources");
         
-        // Create resources directory if it doesn't exist
+        println!("Android resources path: {}", resources_path.display());
         fs::create_dir_all(&resources_path).expect("Failed to create resources directory");
         
         Self {

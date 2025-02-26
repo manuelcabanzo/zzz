@@ -1,13 +1,16 @@
 use std::path::PathBuf;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Write;
 use std::time::Duration;
 use reqwest::Client;
 use indicatif::{ProgressBar, ProgressStyle};
 use tokio::time::timeout;
 use std::sync::Arc;
+use futures_util::StreamExt;
+use bytes::Bytes;
 
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes timeout
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const SDK_BASE_URL: &str = "https://dl.google.com/android/repository";
 
 pub struct AndroidSdkManager {
     sdk_path: PathBuf,
@@ -16,12 +19,16 @@ pub struct AndroidSdkManager {
 
 impl AndroidSdkManager {
     pub fn new() -> Self {
-        let home_dir = dirs::home_dir().expect("Could not find home directory");
-        let sdk_path = home_dir.join(".zzz").join("android-sdk");
-        fs::create_dir_all(&sdk_path).expect("Could not create SDK directory");
+        let app_data = dirs::config_dir()
+            .expect("Could not find config directory")
+            .join("zzz")
+            .join("android-sdk");
+            
+        println!("SDK path: {}", app_data.display());
+        fs::create_dir_all(&app_data).expect("Could not create SDK directory");
 
         Self {
-            sdk_path,
+            sdk_path: app_data,
             client: Client::builder()
                 .timeout(Duration::from_secs(60))
                 .build()
@@ -31,48 +38,63 @@ impl AndroidSdkManager {
 
     pub async fn ensure_api_level(&self, api_level: &str, progress_callback: Arc<dyn Fn(f32) + Send + Sync>) -> Result<(), Box<dyn std::error::Error>> {
         let platform_dir = self.sdk_path.join("platforms").join(format!("android-{}", api_level));
+        println!("Platform directory: {}", platform_dir.display());
         
         if platform_dir.exists() {
+            println!("Platform already downloaded");
             (progress_callback)(1.0);
             return Ok(());
         }
 
         fs::create_dir_all(&platform_dir)?;
+        
+        // Construct the correct URL for the platform
+        let filename = format!("platform-{}_r01.zip", api_level);
+        let url = format!("{}/{}", SDK_BASE_URL, filename);
+        println!("Downloading from URL: {}", url);
 
-        let url = format!(
-            "https://dl.google.com/android/repository/platform-{}.zip",
-            api_level
-        );
+        let response = match timeout(DOWNLOAD_TIMEOUT, self.client.get(&url).send()).await {
+            Ok(Ok(response)) => {
+                if !response.status().is_success() {
+                    return Err(format!("Failed to download: HTTP {}", response.status()).into());
+                }
+                response
+            },
+            Ok(Err(e)) => return Err(format!("Request error: {}", e).into()),
+            Err(_) => return Err("Download timed out".into()),
+        };
 
-        let total_size = self.get_download_size(&url).await?;
+        let total_size = response.content_length().unwrap_or(0);
         let pb = ProgressBar::new(total_size);
         pb.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")?);
 
-        let response = timeout(DOWNLOAD_TIMEOUT, self.client.get(&url).send()).await??;
-        let bytes = response.bytes().await?;
-        let downloaded = bytes.len() as u64;
+        println!("Starting download of {} bytes", total_size);
         
+        let mut downloaded = 0u64;
         let mut temp_file = tempfile::NamedTempFile::new()?;
-        temp_file.write_all(&bytes)?;
-        
-        pb.set_position(downloaded);
-        (progress_callback)(downloaded as f32 / total_size as f32);
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk: Bytes = chunk_result?;
+            temp_file.write_all(&chunk)?;
+            downloaded += chunk.len() as u64;
+            pb.set_position(downloaded);
+            (progress_callback)(downloaded as f32 / total_size as f32);
+            
+            println!("Downloaded: {}/{} bytes", downloaded, total_size);
+        }
 
         pb.finish_with_message("Download completed");
 
-        println!("Extracting SDK files...");
-        let mut archive = zip::ZipArchive::new(File::open(temp_file.path())?)?;
+        println!("Extracting SDK files to {}", platform_dir.display());
+        let temp_file = temp_file.reopen()?;
+        let mut archive = zip::ZipArchive::new(temp_file)?;
         archive.extract(&platform_dir)?;
 
         println!("API level {} installation completed", api_level);
         (progress_callback)(1.0);
         Ok(())
-    }
-
-    async fn get_download_size(&self, url: &str) -> Result<u64, Box<dyn std::error::Error>> {
-        let response = self.client.head(url).send().await?;
-        Ok(response.content_length().unwrap_or(0))
     }
 
     pub fn get_sdk_path(&self) -> PathBuf {
