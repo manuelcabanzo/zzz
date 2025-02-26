@@ -1,20 +1,28 @@
 use std::fs;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 use crate::core::file_system::FileSystem;
 use crate::core::android_resources::AndroidResources;
+use crate::core::android_sdk_manager::AndroidSdkManager;
 
 pub struct AppCreation {
     pub app_name: String,
     pub app_path: String,
     pub api_level: String,
     resources: AndroidResources,
-    logger: Rc<dyn Fn(String)>, // Add logger
-    progress_callback: Rc<dyn Fn(f32)>, // Add progress callback
+    logger: Arc<dyn Fn(String) + Send + Sync>,
+    progress_callback: Arc<dyn Fn(f32) + Send + Sync>,
 }
 
 impl AppCreation {
-    pub fn new(app_name: String, app_path: String, api_level: String, logger: Rc<dyn Fn(String)>, progress_callback: Rc<dyn Fn(f32)>) -> Self {
+    pub fn new(
+        app_name: String, 
+        app_path: String, 
+        api_level: String, 
+        logger: Arc<dyn Fn(String) + Send + Sync>, 
+        progress_callback: Arc<dyn Fn(f32) + Send + Sync>
+    ) -> Self {
         let resources = AndroidResources::load_state()
             .unwrap_or_else(|_| AndroidResources::new());
         
@@ -34,20 +42,29 @@ impl AppCreation {
         }
 
         (self.logger)("Starting app creation...".to_string());
-    
-        // Ensure we have necessary Gradle files
-        self.resources.ensure_gradle_files()?;
-        (self.progress_callback)(0.1);
-    
-        // Ensure we have the requested API level
-        self.resources.ensure_api_level(&self.api_level)?;
-        (self.progress_callback)(0.2);
-    
+
+        // Initialize SDK manager
+        let sdk_manager = AndroidSdkManager::new();
+        let progress_callback = Arc::new({
+            let parent_callback = Arc::clone(&self.progress_callback);
+            move |p: f32| parent_callback(p * 0.4)
+        });
+
+        // Create runtime for async operations
+        let rt = Runtime::new()?;
+        rt.block_on(async {
+            // Ensure SDK is downloaded
+            (self.logger)("Downloading Android SDK...".to_string());
+            sdk_manager.ensure_api_level(&self.api_level, progress_callback).await?;
+            (self.logger)("SDK download completed".to_string());
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+
         let app_dir = PathBuf::from(&self.app_path).join(&self.app_name);
-        let fs = Rc::new(FileSystem::new(app_dir.to_str().unwrap()));
+        let fs = Arc::new(FileSystem::new(app_dir.to_str().unwrap()));
         fs.create_directory(&app_dir)?;
-        (self.progress_callback)(0.3);
-    
+        (self.progress_callback)(0.5);
+
         // Create project structure
         let src_main_dir = app_dir.join("src").join("main");
         let src_test_dir = app_dir.join("src").join("test");
@@ -72,7 +89,7 @@ impl AppCreation {
             &res_dir.join("xml"),
         ].iter().enumerate() {
             fs.create_directory(dir)?;
-            (self.progress_callback)(0.3 + 0.05 * i as f32);
+            (self.progress_callback)(0.5 + 0.05 * i as f32);
         }
     
         // Copy Gradle files from resources

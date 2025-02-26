@@ -2,7 +2,6 @@ use eframe::egui;
 use crate::utils::themes::{custom_theme, Theme};
 use crate::core::app_creation::AppCreation;
 use crate::plugin_manager::PluginManager;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use rfd::FileDialog;
 
@@ -186,51 +185,85 @@ impl SettingsModal {
 
         ui.horizontal(|ui| {
             ui.label("App Name:");
-            ui.text_edit_singleline(&mut self.app_name);
+            ui.text_edit_singleline(&mut self.app_name)
+                .on_hover_text("Enter the name of your app");
         });
 
         ui.horizontal(|ui| {
-            ui.label("App Path:");
-            ui.text_edit_singleline(&mut self.app_path);
+            ui.label("Project Location:");
+            ui.text_edit_singleline(&mut self.app_path)
+                .on_hover_text("Enter the path where your project will be created");
+            if ui.button("Browse").clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    self.app_path = path.to_str().unwrap_or("").to_string();
+                }
+            }
         });
 
         ui.horizontal(|ui| {
-            ui.label("API Level:");
-            ui.text_edit_singleline(&mut self.api_level);
+            ui.label("Android API Level:");
+            egui::ComboBox::from_label("")
+                .selected_text(&self.api_level)
+                .show_ui(ui, |ui| {
+                    for api in &["34", "33", "32", "31", "30"] {
+                        ui.selectable_value(&mut self.api_level, api.to_string(), *api);
+                    }
+                });
         });
 
-        if ui.button("Create App").clicked() {
+        if ui.button("Create App").clicked() && !self.app_name.is_empty() && !self.app_path.is_empty() {
+            // Clear previous logs and reset progress
+            self.logs.lock().unwrap().clear();
+            *self.progress.lock().unwrap() = 0.0;
+
             let logs_callback = {
                 let logs = self.logs.clone();
-                Rc::new(move |log: String| {
+                Arc::new(move |log: String| {
                     let mut logs = logs.lock().unwrap();
                     logs.push(log);
-                }) as Rc<dyn Fn(String)>
+                }) as Arc<dyn Fn(String) + Send + Sync>
             };
 
             let progress_callback = {
                 let progress = self.progress.clone();
-                Rc::new(move |p: f32| {
+                Arc::new(move |p: f32| {
                     let mut progress = progress.lock().unwrap();
                     *progress = p;
-                }) as Rc<dyn Fn(f32)>
+                }) as Arc<dyn Fn(f32) + Send + Sync>
             };
 
-            let app_creation = AppCreation::new(self.app_name.clone(), self.app_path.clone(), self.api_level.clone(), logs_callback, progress_callback);
+            let app_creation = AppCreation::new(
+                self.app_name.clone(),
+                self.app_path.clone(),
+                self.api_level.clone(),
+                logs_callback,
+                progress_callback
+            );
+
             if let Err(e) = app_creation.create_app() {
                 ui.label(format!("Failed to create app: {}", e));
             }
         }
 
         // Display progress bar
-        let progress = self.progress.lock().unwrap();
-        ui.add(egui::ProgressBar::new(*progress).show_percentage());
+        let progress = *self.progress.lock().unwrap();
+        ui.add(
+            egui::ProgressBar::new(progress)
+                .show_percentage()
+                .animate(true)
+        );
 
-        // Display logs
-        let logs = self.logs.lock().unwrap();
-        for log in logs.iter() {
-            ui.label(log);
-        }
+        // Display logs in a scrollable area
+        ui.group(|ui| {
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    let logs = self.logs.lock().unwrap();
+                    for log in logs.iter() {
+                        ui.label(log);
+                    }
+                });
+        });
     }
 
     fn show_extension_settings(&mut self, ui: &mut egui::Ui) {

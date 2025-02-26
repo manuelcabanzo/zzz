@@ -9,6 +9,7 @@ pub mod core {
     pub mod app_creation;
     pub mod downloader;
     pub mod android_resources;
+    pub mod android_sdk_manager;
 }
 
 pub mod utils {
