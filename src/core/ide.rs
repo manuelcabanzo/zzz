@@ -1,4 +1,5 @@
 use eframe::egui::{self, Rect, Stroke, Color32, Painter, Vec2, TextEdit, ScrollArea};
+use tokio::task::LocalSet;
 use crate::components::{
     file_modal::FileModal,
     code_editor::CodeEditor,
@@ -44,6 +45,7 @@ pub struct IDE {
     pub ai_model: String,
     pub git_modal: GitModal,
     pub plugin_manager: Arc<Mutex<PluginManager>>,
+    local_pool: LocalSet,
 }
 
 impl IDE {
@@ -64,7 +66,7 @@ impl IDE {
         let file_modal = FileModal::new();
 
         let mut ide = Self {
-            file_modal: file_modal,
+            file_modal,
             code_editor,
             console_panel: ConsolePanel::new(),
             emulator_panel,
@@ -89,8 +91,12 @@ impl IDE {
             ai_model: state.ai_model.clone(),
             git_modal: GitModal::new(tokio_runtime.clone()),
             plugin_manager: plugin_manager_arc.clone(),
+            local_pool: LocalSet::new(),
         };
 
+        ide.settings_modal.set_runtime(tokio_runtime.clone());
+
+        // Initialize async runtime context
         let _guard = tokio_runtime.enter();
 
         if let Some(project_path) = &ide.file_modal.project_path {
@@ -309,6 +315,33 @@ impl IDE {
     }
 
     pub fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Run any pending async tasks
+        let rt = self.tokio_runtime.clone();
+        rt.block_on(self.local_pool.run_until(async {
+            tokio::task::yield_now().await;
+        }));
+
+        // Reset the LocalSet for next frame
+        self.local_pool = LocalSet::new();
+
+        // Instead of block_on, we'll drive the LocalSet forward
+        let rt = self.tokio_runtime.clone();
+        let rt_clone = rt.clone();
+        let _ = rt.spawn_blocking(move || {
+            let local = LocalSet::new();
+            rt_clone.block_on(local);
+        });
+
+        // Run any pending async tasks
+        let rt = self.tokio_runtime.clone();
+        rt.block_on(self.local_pool.run_until(async {
+            // Run all pending tasks
+            tokio::task::yield_now().await;
+        }));
+
+        // Reset the LocalSet for next frame
+        self.local_pool = LocalSet::new();
+
         egui::TopBottomPanel::top("title_bar").show(ctx, |ui| {
             self.custom_title_bar(ui);
         });

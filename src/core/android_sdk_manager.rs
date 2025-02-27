@@ -11,6 +11,7 @@ use bytes::Bytes;
 
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const SDK_BASE_URL: &str = "https://dl.google.com/android/repository";
+const PROGRESS_REPORT_THRESHOLD: u64 = 1024 * 1024; // Report every 1MB
 
 pub struct AndroidSdkManager {
     sdk_path: PathBuf,
@@ -48,7 +49,6 @@ impl AndroidSdkManager {
 
         fs::create_dir_all(&platform_dir)?;
         
-        // Construct the correct URL for the platform
         let filename = format!("platform-{}_r01.zip", api_level);
         let url = format!("{}/{}", SDK_BASE_URL, filename);
         println!("Downloading from URL: {}", url);
@@ -72,6 +72,7 @@ impl AndroidSdkManager {
         println!("Starting download of {} bytes", total_size);
         
         let mut downloaded = 0u64;
+        let mut last_reported = 0u64;
         let mut temp_file = tempfile::NamedTempFile::new()?;
         let mut stream = response.bytes_stream();
 
@@ -79,21 +80,49 @@ impl AndroidSdkManager {
             let chunk: Bytes = chunk_result?;
             temp_file.write_all(&chunk)?;
             downloaded += chunk.len() as u64;
-            pb.set_position(downloaded);
-            (progress_callback)(downloaded as f32 / total_size as f32);
             
-            println!("Downloaded: {}/{} bytes", downloaded, total_size);
+            // Update progress bar and callback less frequently
+            if downloaded - last_reported >= PROGRESS_REPORT_THRESHOLD {
+                pb.set_position(downloaded);
+                (progress_callback)(downloaded as f32 / total_size as f32);
+                last_reported = downloaded;
+                
+                // Yield to allow UI to update
+                tokio::task::yield_now().await;
+            }
         }
 
+        // Final progress update
+        pb.set_position(downloaded);
+        (progress_callback)(1.0);
         pb.finish_with_message("Download completed");
 
-        println!("Extracting SDK files to {}", platform_dir.display());
+        println!("Extracting SDK files...");
         let temp_file = temp_file.reopen()?;
         let mut archive = zip::ZipArchive::new(temp_file)?;
-        archive.extract(&platform_dir)?;
+        
+        // Extract files with periodic yields to prevent UI blocking
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i)?;
+            let outpath = platform_dir.join(file.mangled_name());
+            
+            if file.is_dir() {
+                fs::create_dir_all(&outpath)?;
+            } else {
+                if let Some(parent) = outpath.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let mut outfile = fs::File::create(&outpath)?;
+                std::io::copy(&mut file, &mut outfile)?;
+            }
+            
+            // Yield periodically during extraction
+            if i % 100 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
 
         println!("API level {} installation completed", api_level);
-        (progress_callback)(1.0);
         Ok(())
     }
 

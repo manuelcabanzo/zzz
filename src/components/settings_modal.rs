@@ -4,6 +4,7 @@ use crate::core::app_creation::AppCreation;
 use crate::plugin_manager::PluginManager;
 use std::sync::{Arc, Mutex};
 use rfd::FileDialog;
+use tokio::runtime::Runtime;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsTab {
@@ -28,6 +29,7 @@ pub struct SettingsModal {
     logs: Arc<Mutex<Vec<String>>>, // Add field for logs
     progress: Arc<Mutex<f32>>, // Add field for progress
     plugin_manager: Arc<Mutex<PluginManager>>, // Add field for plugin manager
+    runtime: Option<Arc<Runtime>>,
 }
 
 impl SettingsModal {
@@ -46,7 +48,13 @@ impl SettingsModal {
             logs: Arc::new(Mutex::new(Vec::new())), // Initialize logs
             progress: Arc::new(Mutex::new(0.0)), // Initialize progress
             plugin_manager,
+            runtime: None,
         }
+    }
+
+    // Add method to set runtime
+    pub fn set_runtime(&mut self, runtime: Arc<Runtime>) {
+        self.runtime = Some(runtime);
     }
 
     // Add getter for API key
@@ -212,36 +220,50 @@ impl SettingsModal {
         });
 
         if ui.button("Create App").clicked() && !self.app_name.is_empty() && !self.app_path.is_empty() {
-            // Clear previous logs and reset progress
             self.logs.lock().unwrap().clear();
             *self.progress.lock().unwrap() = 0.0;
 
-            let logs_callback = {
-                let logs = self.logs.clone();
-                Arc::new(move |log: String| {
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(log);
-                }) as Arc<dyn Fn(String) + Send + Sync>
-            };
+            // Clone values for the closure
+            let app_name = self.app_name.clone();
+            let app_path = self.app_path.clone();
+            let api_level = self.api_level.clone();
+            let logs = self.logs.clone();
+            let progress = self.progress.clone();
 
-            let progress_callback = {
-                let progress = self.progress.clone();
-                Arc::new(move |p: f32| {
-                    let mut progress = progress.lock().unwrap();
-                    *progress = p;
-                }) as Arc<dyn Fn(f32) + Send + Sync>
-            };
+            // Create callback that won't be moved
+            let logs_msg = Arc::new(move |msg: String| {
+                if let Ok(mut logs) = logs.lock() {
+                    logs.push(msg);
+                }
+            });
 
-            let app_creation = AppCreation::new(
-                self.app_name.clone(),
-                self.app_path.clone(),
-                self.api_level.clone(),
-                logs_callback,
-                progress_callback
-            );
+            let progress_cb = Arc::new(move |p: f32| {
+                if let Ok(mut prog) = progress.lock() {
+                    *prog = p;
+                }
+            });
 
-            if let Err(e) = app_creation.create_app() {
-                ui.label(format!("Failed to create app: {}", e));
+            // Log initial message
+            logs_msg("Starting app creation...".to_string());
+
+            // Create app creation instance inside the spawn_blocking closure
+            if let Some(runtime) = &self.runtime {
+                let runtime = runtime.clone();
+                runtime.spawn_blocking(move || {
+                    let app_creation = AppCreation::new(
+                        app_name,
+                        app_path,
+                        api_level,
+                        logs_msg.clone(),
+                        progress_cb
+                    );
+
+                    if let Err(e) = app_creation.create_app() {
+                        logs_msg(format!("Failed to create app: {}", e));
+                    }
+                });
+            } else {
+                logs_msg("Error: Runtime not initialized".to_string());
             }
         }
 

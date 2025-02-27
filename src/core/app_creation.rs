@@ -45,10 +45,7 @@ impl AppCreation {
 
         // Initialize SDK manager
         let sdk_manager = AndroidSdkManager::new();
-        let progress_callback = Arc::new({
-            let parent_callback = Arc::clone(&self.progress_callback);
-            move |p: f32| parent_callback(p * 0.4)
-        });
+        let progress_callback = Arc::clone(&self.progress_callback);
 
         // Create runtime for async operations
         let rt = Runtime::new()?;

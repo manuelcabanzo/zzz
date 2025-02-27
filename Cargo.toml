@@ -42,6 +42,7 @@ tempfile = "3.17.1"
 futures-util = "0.3.31"
 indicatif = "0.17.11"
 bytes = "1.10.0"
+const_format = "0.2.34"
 
 [lib]
 name = "zzz"
