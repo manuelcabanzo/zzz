@@ -43,26 +43,36 @@ impl AppCreation {
 
         (self.logger)("Starting app creation...".to_string());
 
-        // Initialize SDK manager
+        // Initialize SDK manager and accept licenses
         let sdk_manager = AndroidSdkManager::new();
         let progress_callback = Arc::clone(&self.progress_callback);
 
         // Create runtime for async operations
         let rt = Runtime::new()?;
         rt.block_on(async {
-            // Ensure SDK is downloaded
+            // Ensure SDK is downloaded and licenses accepted
+            (self.logger)("Setting up Android SDK...".to_string());
+            sdk_manager.accept_licenses()?;
             (self.logger)("Downloading Android SDK...".to_string());
             sdk_manager.ensure_api_level(&self.api_level, progress_callback).await?;
-            (self.logger)("SDK download completed".to_string());
+            (self.logger)("SDK setup completed".to_string());
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
 
-        let app_dir = PathBuf::from(&self.app_path).join(&self.app_name);
-        let fs = Arc::new(FileSystem::new(app_dir.to_str().unwrap()));
+        // Create root project directory
+        (self.logger)("Creating project structure...".to_string());
+        let project_dir = PathBuf::from(&self.app_path).join(&self.app_name);
+        let app_dir = project_dir.join("app"); // Create app subdirectory
+        let fs = Arc::new(FileSystem::new(project_dir.to_str().unwrap()));
+        
+        // Create root and app directories
+        fs.create_directory(&project_dir)?;
         fs.create_directory(&app_dir)?;
+        (self.logger)("Created root directories".to_string());
         (self.progress_callback)(0.5);
 
-        // Create project structure
+        // Move all Android-specific directories under app/
+        (self.logger)("Creating Android app directories...".to_string());
         let src_main_dir = app_dir.join("src").join("main");
         let src_test_dir = app_dir.join("src").join("test");
         let src_android_test_dir = app_dir.join("src").join("androidTest");
@@ -90,10 +100,11 @@ impl AppCreation {
         }
     
         // Copy Gradle files from resources
+        (self.logger)("Setting up Gradle build system...".to_string());
         let gradle_source = self.resources.get_gradle_path();
         for file in &["gradlew", "gradlew.bat"] {
             let source = gradle_source.join(file);
-            let dest = app_dir.join(file);
+            let dest = project_dir.join(file);
             fs::copy(source, dest)?;
             
             // Make gradlew executable on Unix-like systems
@@ -108,7 +119,7 @@ impl AppCreation {
         (self.progress_callback)(0.6);
     
         // Create gradle wrapper directory and copy files
-        let gradle_wrapper_dir = app_dir.join("gradle").join("wrapper");
+        let gradle_wrapper_dir = project_dir.join("gradle").join("wrapper");
         fs.create_directory(&gradle_wrapper_dir)?;
         
         for file in &["gradle-wrapper.jar", "gradle-wrapper.properties"] {
@@ -118,6 +129,63 @@ impl AppCreation {
         }
         (self.progress_callback)(0.7);
     
+        // Create root build.gradle.kts
+        (self.logger)("Creating build configuration files...".to_string());
+        let root_build_gradle = r#"buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.2.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0")
+    }
+}"#;
+        fs::write(project_dir.join("build.gradle.kts"), root_build_gradle)?;
+
+        // Move build.gradle.kts content to app/build.gradle.kts
+        let app_build_gradle = format!(
+            r#"plugins {{
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}}
+
+android {{
+    namespace = "com.example.app"
+    compileSdk = {api_level}
+    // ...rest of existing android config...
+}}
+"#,
+            api_level = self.api_level
+        );
+        fs::write(app_dir.join("build.gradle.kts"), app_build_gradle)?;
+
+        // Update settings.gradle.kts
+        let settings_gradle = format!(r#"pluginManagement {{
+    repositories {{
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }}
+}}
+dependencyResolutionManagement {{
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {{
+        google()
+        mavenCentral()
+    }}
+}}
+
+rootProject.name = "{}"
+include(":app")
+"#, self.app_name);
+        fs::write(project_dir.join("settings.gradle.kts"), settings_gradle)?;
+
+        // Create local.properties with SDK path
+        let sdk_path = sdk_manager.get_sdk_path();
+        let local_properties = format!("sdk.dir={}", sdk_path.to_str().unwrap().replace("\\", "\\\\"));
+        fs::write(project_dir.join("local.properties"), local_properties)?;
+
         // Create build.gradle.kts
         let build_gradle_content = format!(
             r#"plugins {{
@@ -218,9 +286,21 @@ impl AppCreation {
     rootProject.name = "MyApplication"
     include(":app")
     "#;
-        fs::write(app_dir.join("settings.gradle.kts"), settings_gradle_content)?;
+        fs::write(project_dir.join("settings.gradle.kts"), settings_gradle_content)?;
     
+        // Create gradle.properties with AndroidX configuration
+        (self.logger)("Creating Gradle configuration...".to_string());
+        let gradle_properties = r#"org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.enableJetifier=true
+kotlin.code.style=official
+org.gradle.parallel=true
+org.gradle.caching=true
+"#;
+        fs::write(project_dir.join("gradle.properties"), gradle_properties)?;
+
         // Create MainActivity.kt
+        (self.logger)("Creating Android source files...".to_string());
         let main_activity_content = r#"package com.example.app
     
     import android.os.Bundle
@@ -321,6 +401,7 @@ impl AppCreation {
         fs::write(kotlin_dir.join("Theme.kt"), theme_content)?;
     
         // Create AndroidManifest.xml
+        (self.logger)("Creating Android resource files...".to_string());
         let manifest_content = r#"<?xml version="1.0" encoding="utf-8"?>
     <manifest xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:tools="http://schemas.android.com/tools">
@@ -385,6 +466,7 @@ impl AppCreation {
         fs::write(res_dir.join("xml").join("data_extraction_rules.xml"), data_extraction_content)?;
     
         // Create ExampleUnitTest.kt
+        (self.logger)("Creating test files...".to_string());
         let unit_test_content = r#"package com.example.app
     
     import org.junit.Test
@@ -428,12 +510,13 @@ impl AppCreation {
     .externalNativeBuild
     .cxx
     local.properties"#;
-        fs::write(app_dir.join(".gitignore"), gitignore_content)?;
+        fs::write(project_dir.join(".gitignore"), gitignore_content)?;
     
         // Save resources state
+        (self.logger)("Finalizing project setup...".to_string());
         self.resources.save_state()?;
         (self.progress_callback)(1.0);
-        (self.logger)("App creation completed.".to_string());
+        (self.logger)(format!("App creation completed. Project created at: {}", project_dir.display()));
     
         Ok(())
     }

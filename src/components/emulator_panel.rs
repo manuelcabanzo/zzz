@@ -274,13 +274,13 @@ impl EmulatorPanel {
         runtime_handle.spawn(async move {
             let mut status = build_status.lock().unwrap();
 
-            *status = Some("Building app...".to_string());
+            *status = Some("Building Android app...".to_string());
             match Self::build_app(&project_path) {
                 Ok(_) => {
-                    *status = Some("Installing app...".to_string());
+                    *status = Some("Build successful, installing app...".to_string());
                     match Self::install_app(&project_path) {
                         Ok(_) => {
-                            *status = Some("Launching app...".to_string());
+                            *status = Some("Installation successful, launching app...".to_string());
                             match Self::launch_app(&package_name, &activity_name) {
                                 Ok(msg) => *status = Some(msg),
                                 Err(e) => *status = Some(format!("Launch failed: {}", e)),
@@ -295,18 +295,21 @@ impl EmulatorPanel {
             is_building.store(false, Ordering::SeqCst);
         });
 
-        self.update_status(Some("Deployment initiated. Screen mirroring started.".to_string()));
+        self.update_status(Some("Starting app deployment process...".to_string()));
     }
 
     /// Build the app using Gradle.
     fn build_app(project_path: &Option<PathBuf>) -> Result<String, String> {
         let path = project_path.as_ref().ok_or("No project path set")?;
-
+        
         let gradle_wrapper = if cfg!(windows) {
             path.join("gradlew.bat")
         } else {
             path.join("gradlew")
         };
+
+        println!("Building app at path: {}", path.display());
+        println!("Using gradle wrapper: {}", gradle_wrapper.display());
 
         let build_result = Command::new(&gradle_wrapper)
             .arg("assembleDebug")
@@ -316,6 +319,11 @@ impl EmulatorPanel {
 
         let stdout = String::from_utf8_lossy(&build_result.stdout).to_string();
         let stderr = String::from_utf8_lossy(&build_result.stderr).to_string();
+
+        println!("Build stdout: {}", stdout);
+        if !stderr.is_empty() {
+            println!("Build stderr: {}", stderr);
+        }
 
         if !build_result.status.success() {
             return Err(format!("Build failed:\nStdout: {}\nStderr: {}", stdout, stderr));
@@ -329,10 +337,13 @@ impl EmulatorPanel {
         let path = project_path.as_ref().ok_or("No project path set")?;
         let apk_path = path.join("app/build/outputs/apk/debug/app-debug.apk");
 
+        println!("Installing APK from: {}", apk_path.display());
+
         if !apk_path.exists() {
             return Err(format!("APK not found at {:?}. Make sure the build was successful.", apk_path));
         }
 
+        println!("Running adb install command...");
         let install_result = Command::new("adb")
             .args(["install", "-r", apk_path.to_str().unwrap()])
             .output()
@@ -340,6 +351,11 @@ impl EmulatorPanel {
 
         let stdout = String::from_utf8_lossy(&install_result.stdout).to_string();
         let stderr = String::from_utf8_lossy(&install_result.stderr).to_string();
+
+        println!("Install stdout: {}", stdout);
+        if !stderr.is_empty() {
+            println!("Install stderr: {}", stderr);
+        }
 
         if !install_result.status.success() {
             return Err(format!("Installation failed:\nStdout: {}\nStderr: {}", stdout, stderr));

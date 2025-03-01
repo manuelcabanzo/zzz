@@ -230,13 +230,15 @@ impl SettingsModal {
             let logs = self.logs.clone();
             let progress = self.progress.clone();
 
-            // Create callback that won't be moved
+            // Create a logger that updates both console and UI
             let logs_msg = Arc::new(move |msg: String| {
+                println!("{}", msg); // Print to console
                 if let Ok(mut logs) = logs.lock() {
-                    logs.push(msg);
+                    logs.push(msg); // Update UI logs
                 }
             });
 
+            // Create a progress callback that updates both console and UI
             let progress_cb = Arc::new(move |p: f32| {
                 if let Ok(mut prog) = progress.lock() {
                     *prog = p;
