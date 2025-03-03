@@ -34,25 +34,65 @@ impl AndroidResources {
 
     pub fn ensure_gradle_files(&self) -> Result<(), Box<dyn std::error::Error>> {
         let gradle_dir = self.resources_path.join("gradle");
-        fs::create_dir_all(&gradle_dir)?;
+        let wrapper_dir = gradle_dir.join("wrapper");
+        fs::create_dir_all(&wrapper_dir)?;
 
-        // URLs for Gradle files
+        // First, download all files to a temporary directory
+        let temp_dir = tempfile::tempdir()?;
+        
         let files = vec![
-            ("gradlew", "https://raw.githubusercontent.com/gradle/gradle/v{}/gradlew"),
-            ("gradlew.bat", "https://raw.githubusercontent.com/gradle/gradle/v{}/gradlew.bat"),
-            ("gradle-wrapper.jar", "https://raw.githubusercontent.com/gradle/gradle/v{}/gradle/wrapper/gradle-wrapper.jar"),
-            ("gradle-wrapper.properties", "https://raw.githubusercontent.com/gradle/gradle/v{}/gradle/wrapper/gradle-wrapper.properties"),
+            ("gradlew", "gradlew"),
+            ("gradlew.bat", "gradlew.bat"),
+            ("wrapper/gradle-wrapper.jar", "gradle/wrapper/gradle-wrapper.jar"),
+            ("wrapper/gradle-wrapper.properties", "gradle/wrapper/gradle-wrapper.properties")
         ];
 
-        for (filename, url_template) in files {
-            let file_path = gradle_dir.join(filename);
-            if !file_path.exists() {
-                let url = url_template.replace("{}", &self.gradle_version);
-                println!("Downloading {} from {}", filename, url);
-                let response = get(&url)?;
-                let mut file = fs::File::create(&file_path)?;
-                file.write_all(&response.bytes()?)?;
+        // Download all files first
+        for (dest_path, source_path) in &files {
+            let url = format!(
+                "https://raw.githubusercontent.com/gradle/gradle/v{}/{}",
+                self.gradle_version,
+                source_path
+            );
+            let temp_path = temp_dir.path().join(dest_path);
+            
+            // Create parent directories if needed
+            if let Some(parent) = temp_path.parent() {
+                fs::create_dir_all(parent)?;
             }
+
+            println!("Downloading {} from {}", dest_path, url);
+            let response = get(&url)?;
+            if !response.status().is_success() {
+                return Err(format!("Failed to download {}: {}", url, response.status()).into());
+            }
+            fs::write(&temp_path, response.bytes()?)?;
+
+            // Make gradlew executable on Unix-like systems
+            #[cfg(unix)]
+            if dest_path == "gradlew" {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&temp_path)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&temp_path, perms)?;
+            }
+        }
+
+        // If all downloads succeeded, copy files to final location
+        for (dest_path, _) in files {
+            let source = temp_dir.path().join(dest_path);
+            let dest = if dest_path.starts_with("wrapper/") {
+                gradle_dir.join(dest_path)
+            } else {
+                gradle_dir.join(dest_path)
+            };
+
+            // Create parent directories if needed
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            fs::copy(&source, &dest)?;
         }
 
         Ok(())

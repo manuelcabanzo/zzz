@@ -213,7 +213,7 @@ impl SettingsModal {
             egui::ComboBox::from_label("")
                 .selected_text(&self.api_level)
                 .show_ui(ui, |ui| {
-                    for api in &["34", "33", "32", "31", "30"] {
+                    for api in &["35", "34", "33", "32", "31", "30"] {
                         ui.selectable_value(&mut self.api_level, api.to_string(), *api);
                     }
                 });

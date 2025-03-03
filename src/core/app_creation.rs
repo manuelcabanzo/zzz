@@ -94,40 +94,95 @@ impl AppCreation {
             &res_dir.join("values"),
             &res_dir.join("values-night"),
             &res_dir.join("xml"),
+            &res_dir.join("mipmap-mdpi"),
+            &res_dir.join("mipmap-hdpi"),
+            &res_dir.join("mipmap-xhdpi"),
+            &res_dir.join("mipmap-xxhdpi"),
+            &res_dir.join("mipmap-xxxhdpi"),
         ].iter().enumerate() {
             fs.create_directory(dir)?;
             (self.progress_callback)(0.5 + 0.05 * i as f32);
         }
-    
-        // Copy Gradle files from resources
+
+        // Create basic launcher icons
+        let icon_sizes = [
+            ("mipmap-mdpi", 48),
+            ("mipmap-hdpi", 72),
+            ("mipmap-xhdpi", 96),
+            ("mipmap-xxhdpi", 144),
+            ("mipmap-xxxhdpi", 192),
+        ];
+
+        for (dir_name, size) in icon_sizes {
+            // Create default launcher icon (square background)
+            let icon_content = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/white"/>
+    <foreground>
+        <inset
+            android:drawable="@android:color/holo_blue_dark"
+            android:inset="{}"/>
+    </foreground>
+</adaptive-icon>"#,
+                size / 4
+            );
+
+            // Save both regular and round icons
+            fs::write(
+                res_dir.join(dir_name).join("ic_launcher.xml"),
+                &icon_content
+            )?;
+            fs::write(
+                res_dir.join(dir_name).join("ic_launcher_round.xml"),
+                &icon_content
+            )?;
+        }
+
+        // Create the base icon drawable
+        let drawable_dir = res_dir.join("drawable");
+        fs::create_dir_all(&drawable_dir)?;
+        let base_icon = r#"<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@android:color/holo_blue_dark"/>
+    <corners android:radius="8dp"/>
+</shape>"#;
+        fs::write(drawable_dir.join("ic_launcher_foreground.xml"), base_icon)?;
+
+        // Ensure Gradle files exist before copying
         (self.logger)("Setting up Gradle build system...".to_string());
+        self.resources.ensure_gradle_files()?;
+        
         let gradle_source = self.resources.get_gradle_path();
-        for file in &["gradlew", "gradlew.bat"] {
-            let source = gradle_source.join(file);
-            let dest = project_dir.join(file);
+        let gradle_wrapper_dir = project_dir.join("gradle").join("wrapper");
+        fs.create_directory(&gradle_wrapper_dir)?;
+
+        // Copy all Gradle files
+        let gradle_files = [
+            (gradle_source.join("gradlew"), project_dir.join("gradlew")),
+            (gradle_source.join("gradlew.bat"), project_dir.join("gradlew.bat")),
+            (gradle_source.join("wrapper").join("gradle-wrapper.jar"), 
+             gradle_wrapper_dir.join("gradle-wrapper.jar")),
+            (gradle_source.join("wrapper").join("gradle-wrapper.properties"), 
+             gradle_wrapper_dir.join("gradle-wrapper.properties")),
+        ];
+
+        for (source, dest) in gradle_files.iter() {
+            if !source.exists() {
+                return Err(format!("Gradle file not found: {}", source.display()).into());
+            }
             fs::copy(source, dest)?;
             
-            // Make gradlew executable on Unix-like systems
             #[cfg(unix)]
-            {
+            if dest.file_name().map_or(false, |f| f == "gradlew") {
                 use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(&dest)?.permissions();
+                let mut perms = fs::metadata(dest)?.permissions();
                 perms.set_mode(0o755);
-                fs::set_permissions(&dest, perms)?;
+                fs::set_permissions(dest, perms)?;
             }
         }
         (self.progress_callback)(0.6);
-    
-        // Create gradle wrapper directory and copy files
-        let gradle_wrapper_dir = project_dir.join("gradle").join("wrapper");
-        fs.create_directory(&gradle_wrapper_dir)?;
-        
-        for file in &["gradle-wrapper.jar", "gradle-wrapper.properties"] {
-            let source = gradle_source.join(file);
-            let dest = gradle_wrapper_dir.join(file);
-            fs::copy(source, dest)?;
-        }
-        (self.progress_callback)(0.7);
     
         // Create root build.gradle.kts
         (self.logger)("Creating build configuration files...".to_string());
